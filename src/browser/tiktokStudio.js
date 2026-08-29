@@ -53,13 +53,33 @@ async function fillCaption(page, config, log) {
   return page.evaluate(() => window.__tkq.finalizeCaption());
 }
 
-// 每次都强制刷新回全新的上传页，不信任"看起来已经在上传页"就直接复用——
-// 上一次如果失败在选完文件之后，页面会停在"编辑已选视频"的状态，
-// 这时候页面上根本没有 <input type=file>，复用旧状态会导致后续找不到上传框。
-// 刷新还顺带清掉了 window.__tkq，避免下面用错误config安装过的旧实例被复用
-// （installTkqInPage 是"装过一次就不再重装"的单例，配置传错了也没法覆盖）。
+// 页面是不是已经处于"可以直接选文件"的干净状态：在上传页、有可用的文件输入框、
+// 且没有已经选中在编辑中的视频（上一次如果失败在选完文件之后，会卡在"编辑已选
+// 视频"这个状态，这时候页面上根本没有 <input type=file>）。
+async function isCleanUploadPage(page) {
+  if (!page.url().includes('/tiktokstudio/upload')) return false;
+  try {
+    await page.locator('input[type="file"][accept="video/*"]').first().waitFor({ state: 'attached', timeout: 3000 });
+  } catch {
+    return false;
+  }
+  return page.evaluate(() => !document.querySelector('video, [data-e2e="video_preview"]'));
+}
+
+// 原脚本全程待在同一个页面里，靠点侧边栏"上传"按钮做页内跳转，从来不整页刷新。
+// 这里只在页面确实不干净时才刷新——不能像之前那样每一轮都无条件整页刷新：
+// 发布成功后已经通过 clickUploadEntranceAndWait 正常跳回了干净的上传页，
+// 下一轮再对着这个刚启动完的页面重新整页刷新一次纯属多余，而且怀疑正是
+// TikTok自己偶尔崩溃(Ada masalah/Coba lagi)的诱因之一——原脚本没有这个动作，
+// 没这个问题。刷新还顺带清掉了 window.__tkq，避免用错误config安装过的旧实例
+// 被复用（installTkqInPage 是"装过一次就不再重装"的单例），所以刷新过的分支
+// 后面调用方还是会重新执行一次 installTkqInPage。
 async function ensureOnUploadPage(page, log) {
-  log.info('刷新到干净的上传页…');
+  if (await isCleanUploadPage(page)) {
+    log.info('页面已经是干净的上传页，不用整页刷新');
+    return;
+  }
+  log.info('页面不干净（比如上次失败卡在编辑视频的状态），刷新到全新的上传页…');
   await page.goto(UPLOAD_URL, { waitUntil: 'domcontentloaded' });
 }
 
