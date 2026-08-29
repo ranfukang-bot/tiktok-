@@ -361,7 +361,11 @@ export function installTkqInPage(config) {
   async function clickHashtagChipIfPresent(keyword) {
     const editable = await waitFor(getCaptionEditable);
     editable.focus();
-    await sleep(300);
+    // 刚清空过默认标题的Draft.js编辑器给多一点缓冲再碰它——原脚本自己的注释里提过，
+    // 粗暴操作这个编辑器会触发 removeChild NotFoundError 直接崩掉整个页面，
+    // 说明它对"清空之后马上又被操作"这种情况本来就比较脆弱。这里从300ms放宽到
+    // 700ms，具体有没有用还需要用户拿到真实的浏览器控制台报错后再确认。
+    await sleep(700);
     checkForAppCrash();
 
     const chip = Array.from(document.querySelectorAll('.suggest-item')).find(

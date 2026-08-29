@@ -38,6 +38,9 @@ function installAndBridgeLogs(page, log) {
 // 麻烦一次性的步骤，也不要每次都可能发出去一条文案里带无效"#标签"的内容。
 async function fillCaption(page, config, log) {
   await page.evaluate(() => window.__tkq.clearCaption());
+  // 用户实测撞到的崩溃就发生在"清空默认标题成功"和"点第一个历史标签"这两步之间，
+  // 这里额外多等一段，让刚被清空的Draft.js编辑器有更多时间稳定下来再碰它。
+  await humanDelay(1200, 2000);
 
   for (const keyword of config.hashtagKeywords) {
     const clicked = await page.evaluate(([k]) => window.__tkq.clickHashtagChipIfPresent(k), [keyword]);
