@@ -8,27 +8,36 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function installAndBridgeLogs(page, log) {
+// 同一个账号的浏览器页面会跨多次发布周期反复复用，这个函数每个周期都会被调用一次；
+// 用标记位保证监听器只挂一次，不然日志会一轮比一轮重复得更多次。
+function installAndBridgeLogs(page, log) {
+  if (page.__tkqListenersInstalled) return;
+  page.__tkqListenersInstalled = true;
   page.on('console', (msg) => {
     const text = msg.text();
     if (text.startsWith('[TKQ]')) log.info(text.slice(5).trim());
   });
+  // 上一条如果是中途失败退出的，页面可能停在"要不要放弃未发布的草稿"这类确认框上；
+  // 下面的强制刷新会撞上它，不自动接受的话 goto 会一直卡住。
+  page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
 }
 
+// 每次都强制刷新回全新的上传页，不信任"看起来已经在上传页"就直接复用——
+// 上一次如果失败在选完文件之后，页面会停在"编辑已选视频"的状态，
+// 这时候页面上根本没有 <input type=file>，复用旧状态会导致后续找不到上传框。
+// 刷新还顺带清掉了 window.__tkq，避免下面用错误config安装过的旧实例被复用
+// （installTkqInPage 是"装过一次就不再重装"的单例，配置传错了也没法覆盖）。
 async function ensureOnUploadPage(page, log) {
-  if (!page.url().includes('/tiktokstudio/upload')) {
-    log.info('导航到上传页…');
-    await page.goto(UPLOAD_URL, { waitUntil: 'domcontentloaded' });
-  }
-  await page.evaluate(installTkqInPage, {});
+  log.info('刷新到干净的上传页…');
+  await page.goto(UPLOAD_URL, { waitUntil: 'domcontentloaded' });
 }
 
 // 返回 { published: true } | { published: false, uncertain: true }
 // beforePublishClick: 点击发布前调用（把 pendingIndex 落盘），防止点击后页面跳转、
 // Node进程如果这时候崩了也能在重启后知道"上一条点了发布但结果没确认"，需要人工核实。
 export async function runOneUploadCycle({ page, account, item, config, log, beforePublishClick }) {
+  installAndBridgeLogs(page, log);
   await ensureOnUploadPage(page, log);
-  await installAndBridgeLogs(page, log);
   await page.evaluate(installTkqInPage, config);
 
   const absolutePath = path.join(account.videoFolder, item.relativePath.split('/').join(path.sep));
