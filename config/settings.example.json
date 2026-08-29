@@ -9,6 +9,19 @@
   "videoExtensions": [".mp4", ".mov", ".avi", ".webm"],
   "hashtagKeywords": ["fyp", "tiktok", "tiktokshop"],
 
+  "_retry说明": "临时故障(页面超时、指纹浏览器没开、网络抖动)会按这个间隔自动重试，不打扰你；数组有几项就最多重试几次，全用完还不行才暂停并通知。注意：只要有可能已经点过发布按钮，一律不会自动重试，避免同一条发两遍。",
+  "retryBackoffMs": [300000, 900000, 2400000],
+
+  "notifications": {
+    "_说明": "账号真正需要你处理时推一条消息。provider 可选 telegram / wecom / bark / webhook，填好对应那一段即可。",
+    "enabled": false,
+    "provider": "telegram",
+    "telegram": { "botToken": "", "chatId": "" },
+    "wecom": { "webhookUrl": "" },
+    "bark": { "serverUrl": "" },
+    "webhook": { "url": "" }
+  },
+
   "text": {
     "_说明": "这些是 TikTok Studio 界面文案，跟账号的界面语言绑定（不是账号所在国家，是TikTok Studio实际显示的语言）。原脚本是照着印尼语界面(Bahasa Indonesia)扒下来的；如果某个账号显示的是英文/马来文/菲律宾英文界面，必须在 accounts.json 里用 textOverrides 覆盖，否则会因为文字对不上而找不到按钮。",
     "nextButton": "Berikutnya",

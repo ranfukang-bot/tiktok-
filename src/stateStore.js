@@ -23,6 +23,13 @@ function defaultState() {
     paused: false,
     pauseReason: '',
     pauseCode: '',
+    // 连续失败次数：成功一次就清零。达到上限后才真正暂停并叫人。
+    consecutiveFailures: 0,
+    // 下次自动重试的时间；没在重试等待中就是 null
+    retryAt: null,
+    lastError: '',
+    // 这次暂停是否已经推送过通知，避免每轮循环重复轰炸
+    notifiedForPause: false,
     updatedAt: Date.now(),
   };
 }
@@ -49,6 +56,7 @@ export function pause(accountName, reason, code = 'runtime') {
   state.paused = true;
   state.pauseReason = reason || '自动发布已暂停';
   state.pauseCode = code;
+  state.retryAt = null;
   setState(accountName, state);
   return state;
 }
@@ -58,6 +66,21 @@ export function resume(accountName) {
   state.paused = false;
   state.pauseReason = '';
   state.pauseCode = '';
+  state.consecutiveFailures = 0;
+  state.retryAt = null;
+  state.lastError = '';
+  state.notifiedForPause = false;
+  setState(accountName, state);
+  return state;
+}
+
+// 一轮成功后清掉所有失败痕迹
+export function clearFailures(accountName) {
+  const state = getState(accountName);
+  state.consecutiveFailures = 0;
+  state.retryAt = null;
+  state.lastError = '';
+  state.notifiedForPause = false;
   setState(accountName, state);
   return state;
 }

@@ -13,6 +13,7 @@ import {
 import * as controller from './controller.js';
 import { recentLogs, subscribe } from './logBus.js';
 import { createAdapter } from './browserAdapters/index.js';
+import { sendTestNotification } from './notifier.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8765;
@@ -132,6 +133,16 @@ app.post('/api/accounts/:name/resolve', (req, res) => {
     const { decision } = req.body || {};
     if (decision !== 'published' && decision !== 'retry') throw new Error('decision 必须是 published 或 retry');
     controller.resolveUncertain(req.params.name, decision);
+    res.json({ ok: true });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+// "发送测试通知"按钮：故意把错误原样抛给前端，方便用户看出是哪里填错了
+app.post('/api/notifications/test', async (req, res) => {
+  try {
+    await sendTestNotification(loadSettings());
     res.json({ ok: true });
   } catch (err) {
     handleError(res, err);

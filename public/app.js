@@ -74,6 +74,8 @@ function renderAccounts() {
       stateHtml = `<span class="state processing">正在处理…</span>`;
     } else if (runtime.paused) {
       stateHtml = `<span class="state paused">已暂停</span>`;
+    } else if (runtime.retryAt && runtime.retryAt > Date.now()) {
+      stateHtml = `<span class="state processing">出错重试中，${fmtRemaining(runtime.retryAt - Date.now())}</span>`;
     } else if (runtime.total === 0) {
       stateHtml = `<span class="state paused">还没检测到视频，点"立即扫描"看看</span>`;
     } else if (runtime.remaining === 0) {
@@ -107,6 +109,9 @@ function renderAccounts() {
       <span class="spacer"></span>
       <span class="actions">${actions.join('')}</span>
       ${runtime && runtime.paused && runtime.pauseReason ? `<div class="reason">${escapeHtml(runtime.pauseReason)}</div>` : ''}
+      ${runtime && !runtime.paused && runtime.retryAt && runtime.retryAt > Date.now() && runtime.lastError
+        ? `<div class="reason" style="color:var(--amber);">上次失败（已自动重试 ${runtime.consecutiveFailures} 次）：${escapeHtml(runtime.lastError)}</div>`
+        : ''}
     `;
     list.appendChild(card);
   });
@@ -351,11 +356,46 @@ accountForm.addEventListener('submit', async (e) => {
 
 // ===================== 全局设置 =====================
 
+// 只显示当前选中那个推送渠道需要填的字段，其它藏起来
+function updateNotifyFields() {
+  const provider = document.getElementById('s-notify-provider').value;
+  document.querySelectorAll('.notify-cfg').forEach((el) => {
+    el.style.display = el.dataset.provider === provider ? 'grid' : 'none';
+  });
+}
+
+document.getElementById('s-notify-provider').addEventListener('change', updateNotifyFields);
+
+document.getElementById('btn-test-notify').addEventListener('click', async (e) => {
+  const btn = e.target;
+  btn.disabled = true;
+  btn.textContent = '发送中…';
+  try {
+    await api('POST', '/api/notifications/test');
+    alert('测试通知已发出，去看看收到没有。\n如果没收到，检查一下填的token/地址对不对。');
+  } catch (err) {
+    alert('发送失败：' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '发送一条测试通知';
+  }
+});
+
 function fillSettingsForm(settings) {
   document.getElementById('s-min-hours').value = (settings.minIntervalMs / 3600000).toFixed(2);
   document.getElementById('s-max-hours').value = (settings.maxIntervalMs / 3600000).toFixed(2);
   document.getElementById('s-concurrency').value = settings.concurrency || 1;
   document.getElementById('s-scan-seconds').value = Math.round((settings.folderScanIntervalMs || 30000) / 1000);
+
+  const notif = settings.notifications || {};
+  document.getElementById('s-notify-enabled').checked = Boolean(notif.enabled);
+  document.getElementById('s-notify-provider').value = notif.provider || 'telegram';
+  document.getElementById('s-notify-tg-token').value = (notif.telegram || {}).botToken || '';
+  document.getElementById('s-notify-tg-chat').value = (notif.telegram || {}).chatId || '';
+  document.getElementById('s-notify-wecom-url').value = (notif.wecom || {}).webhookUrl || '';
+  document.getElementById('s-notify-bark-url').value = (notif.bark || {}).serverUrl || '';
+  document.getElementById('s-notify-webhook-url').value = (notif.webhook || {}).url || '';
+  updateNotifyFields();
 
   const bit = settings.bitbrowser || {};
   document.getElementById('s-bit-baseurl').value = bit.baseUrl || '';
@@ -380,6 +420,18 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
   settings.maxIntervalMs = Math.round(Number(document.getElementById('s-max-hours').value) * 3600000);
   settings.concurrency = Number(document.getElementById('s-concurrency').value);
   settings.folderScanIntervalMs = Number(document.getElementById('s-scan-seconds').value) * 1000;
+  settings.notifications = {
+    ...(currentSettings.notifications || {}),
+    enabled: document.getElementById('s-notify-enabled').checked,
+    provider: document.getElementById('s-notify-provider').value,
+    telegram: {
+      botToken: document.getElementById('s-notify-tg-token').value.trim(),
+      chatId: document.getElementById('s-notify-tg-chat').value.trim(),
+    },
+    wecom: { webhookUrl: document.getElementById('s-notify-wecom-url').value.trim() },
+    bark: { serverUrl: document.getElementById('s-notify-bark-url').value.trim() },
+    webhook: { url: document.getElementById('s-notify-webhook-url').value.trim() },
+  };
   settings.bitbrowser = {
     baseUrl: document.getElementById('s-bit-baseurl').value.trim(),
   };

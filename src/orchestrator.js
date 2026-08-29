@@ -2,9 +2,11 @@ import { chromium } from 'playwright-core';
 import { loadSettings, loadAccounts, resolveText, resolveHashtags } from './config.js';
 import { createAdapter } from './browserAdapters/index.js';
 import { createLogger } from './logger.js';
-import { getState, setState, pause } from './stateStore.js';
+import { getState, setState, pause, clearFailures } from './stateStore.js';
 import { scanDirectory, syncFilesIntoQueue } from './folderScanner.js';
 import { runOneUploadCycle } from './browser/tiktokStudio.js';
+import { classifyError, retryDelayMs, maxRetries } from './errorPolicy.js';
+import { notify } from './notifier.js';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -17,6 +19,32 @@ function randomInterval(min, max) {
 const processingAccounts = new Set();
 export function isAccountProcessing(name) {
   return processingAccounts.has(name);
+}
+
+function fmtMinutes(ms) {
+  return Math.max(1, Math.round(ms / 60000));
+}
+
+// 真正需要人来处理时才走这里：暂停账号 + 推送通知（每次暂停只推一条）
+async function pauseAndNotify(account, settings, { reason, code, log, howToFix }) {
+  const state = pause(account.name, reason, code);
+  // 具体错误内容由调用方负责打印，这里只说明"停了、需要人管"，避免同一段长报错刷两遍
+  log.warn('已暂停该账号，需要你处理');
+
+  if (state.notifiedForPause) return;
+  const lines = [`账号：${account.name}`, '', reason];
+  if (howToFix) lines.push('', `怎么处理：${howToFix}`);
+  const result = await notify(
+    settings,
+    { title: '⚠️ TikTok自动发布需要你处理', text: lines.join('\n'), account: account.name },
+    log
+  );
+  if (result.sent) {
+    const latest = getState(account.name);
+    latest.notifiedForPause = true;
+    setState(account.name, latest);
+    log.info('已推送通知');
+  }
 }
 
 export async function syncAccountFolder(account, settings, log) {
@@ -65,6 +93,9 @@ async function processAccountOnce(account, settings, adapter, log) {
 
   log.info(`账号到点，开始处理第 ${nextIdx + 1}/${state.items.length} 条: ${item.relativePath}`);
 
+  // 一旦置为true，说明这轮已经可能点过发布按钮了，任何后续错误都不许自动重试
+  let publishAttempted = false;
+
   const { wsEndpoint } = await adapter.startProfile(account);
   const browser = await chromium.connectOverCDP(wsEndpoint);
   try {
@@ -74,19 +105,27 @@ async function processAccountOnce(account, settings, adapter, log) {
       hashtagKeywords: resolveHashtags(settings, account),
     };
 
-    const result = await runOneUploadCycle({
-      page,
-      account,
-      item,
-      config,
-      log,
-      beforePublishClick: async () => {
-        const s = getState(account.name);
-        s.pendingIndex = nextIdx;
-        s.pendingSince = Date.now();
-        setState(account.name, s);
-      },
-    });
+    let result;
+    try {
+      result = await runOneUploadCycle({
+        page,
+        account,
+        item,
+        config,
+        log,
+        beforePublishClick: async () => {
+          publishAttempted = true;
+          const s = getState(account.name);
+          s.pendingIndex = nextIdx;
+          s.pendingSince = Date.now();
+          setState(account.name, s);
+        },
+      });
+    } catch (err) {
+      // 把"是否已经点过发布"这个关键信息带给上层的错误分类逻辑
+      err.publishAttempted = publishAttempted;
+      throw err;
+    }
 
     const latest = getState(account.name);
     if (result.published) {
@@ -95,15 +134,15 @@ async function processAccountOnce(account, settings, adapter, log) {
       latest.pendingSince = null;
       latest.nextTime = Date.now() + randomInterval(settings.minIntervalMs, settings.maxIntervalMs);
       setState(account.name, latest);
-      log.info(`本条发布完成，下一条将在约 ${Math.round((latest.nextTime - Date.now()) / 60000)} 分钟后开始`);
+      log.info(`本条发布完成，下一条将在约 ${fmtMinutes(latest.nextTime - Date.now())} 分钟后开始`);
+      clearFailures(account.name);
     } else {
-      pause(
-        account.name,
-        '点击发布后45秒仍未跳转到内容页，发布结果不确定；请打开该指纹浏览器人工核实TikTok内容列表，' +
-          `确认后运行: node src/index.js resolve "${account.name}" --published 或 --retry`,
-        'uncertain_publish'
-      );
-      log.warn('发布结果不确定，已暂停该账号，等待人工核实');
+      await pauseAndNotify(account, settings, {
+        reason: '点击发布后没等到跳转，这一条到底发出去没有不确定，已停下等你确认（不会自动重试，避免同一条发两遍）',
+        code: 'uncertain_publish',
+        howToFix: '打开这个账号的指纹浏览器看一眼TikTok内容列表，然后在控制台网页上点"确认已发布"或"确认未发布，重试"',
+        log,
+      });
     }
   } finally {
     await browser.close().catch(() => {});
@@ -118,6 +157,9 @@ async function tickAccount(settings, account, adapters) {
   try {
     const state = getState(account.name);
     if (state.paused) return;
+    // 上一轮失败后正在等待重试，时间没到就先不动
+    if (Number.isFinite(state.retryAt) && Date.now() < state.retryAt) return;
+
     if (!Number.isInteger(state.pendingIndex)) {
       await syncAccountFolder(account, settings, log);
     }
@@ -136,9 +178,46 @@ async function tickAccount(settings, account, adapters) {
       processingAccounts.delete(account.name);
     }
   } catch (err) {
-    log.error(`出错: ${err.message}`);
-    pause(account.name, err.message, err.code || 'runtime');
+    await handleAccountError(account, settings, err, log);
   }
+}
+
+// 出错之后的决策：自己重试，还是停下来叫人
+async function handleAccountError(account, settings, err, log) {
+  const verdict = classifyError(err, { publishAttempted: err.publishAttempted });
+  log.error(`出错: ${verdict.reason}`);
+
+  const backoff = settings.retryBackoffMs;
+  const limit = maxRetries(backoff);
+
+  if (verdict.kind !== 'transient') {
+    const howToFix =
+      verdict.kind === 'config'
+        ? '这属于配置问题，重试也没用。在控制台网页上点这个账号的"编辑"核对一下环境ID/视频文件夹/界面语言，或者检查指纹浏览器客户端是不是开着'
+        : '这一条需要你人工看一眼再决定怎么处理，处理完在控制台网页上点"继续"';
+    await pauseAndNotify(account, settings, { reason: verdict.reason, code: verdict.code, howToFix, log });
+    return;
+  }
+
+  const state = getState(account.name);
+  const failures = (state.consecutiveFailures || 0) + 1;
+
+  if (failures > limit) {
+    await pauseAndNotify(account, settings, {
+      reason: `连续失败 ${failures} 次，已经自动重试过 ${limit} 次仍然不行，最后一次的错误是：${verdict.reason}`,
+      code: 'retry_exhausted',
+      howToFix: '看一下控制台网页底部的运行日志，找到反复失败的那一步；处理完点"继续"',
+      log,
+    });
+    return;
+  }
+
+  const delay = retryDelayMs(failures, backoff);
+  state.consecutiveFailures = failures;
+  state.retryAt = Date.now() + delay;
+  state.lastError = verdict.reason;
+  setState(account.name, state);
+  log.warn(`看起来是临时问题，${fmtMinutes(delay)} 分钟后自动重试（第 ${failures}/${limit} 次），暂时不打扰你`);
 }
 
 // 同一批次内的账号各自独立(各自的浏览器环境、各自的状态文件)，可以放心并发跑。

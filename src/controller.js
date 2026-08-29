@@ -62,6 +62,9 @@ export function getStatus() {
         pauseCode: state.pauseCode,
         nextTime: state.nextTime,
         processing: isAccountProcessing(account.name),
+        consecutiveFailures: state.consecutiveFailures || 0,
+        retryAt: state.retryAt,
+        lastError: state.lastError,
       };
     });
     void settings;

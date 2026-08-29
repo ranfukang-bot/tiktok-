@@ -53,6 +53,65 @@
         </div>
 
         <fieldset>
+          <legend>出问题时通知我</legend>
+          <div class="hint" style="margin-bottom:10px;">
+            只有真正需要你处理的时候才会推送（比如发布结果不确定、配置填错了）。
+            页面超时、指纹浏览器没开这类临时问题会自己重试，不打扰你。
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label><input type="checkbox" id="s-notify-enabled"> 启用通知</label>
+            </div>
+            <div class="field">
+              <label>推送到哪</label>
+              <select id="s-notify-provider">
+                <option value="telegram">Telegram 机器人</option>
+                <option value="wecom">企业微信群机器人</option>
+                <option value="bark">Bark（iPhone推送）</option>
+                <option value="webhook">自定义 Webhook</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-grid notify-cfg" data-provider="telegram">
+            <div class="field">
+              <label>Bot Token</label>
+              <input type="text" id="s-notify-tg-token" placeholder="找 @BotFather 创建机器人后给你的一长串">
+            </div>
+            <div class="field">
+              <label>Chat ID</label>
+              <input type="text" id="s-notify-tg-chat" placeholder="找 @userinfobot 发一条消息就能拿到">
+            </div>
+          </div>
+
+          <div class="form-grid narrow notify-cfg" data-provider="wecom">
+            <div class="field">
+              <label>群机器人 Webhook 地址</label>
+              <input type="text" id="s-notify-wecom-url" placeholder="企业微信群 → 群设置 → 群机器人 → 添加后复制地址">
+            </div>
+          </div>
+
+          <div class="form-grid narrow notify-cfg" data-provider="bark">
+            <div class="field">
+              <label>Bark 推送地址</label>
+              <input type="text" id="s-notify-bark-url" placeholder="装好Bark这个App后，App首页显示的那个地址">
+            </div>
+          </div>
+
+          <div class="form-grid narrow notify-cfg" data-provider="webhook">
+            <div class="field">
+              <label>Webhook 地址</label>
+              <input type="text" id="s-notify-webhook-url" placeholder="会往这个地址POST一段JSON">
+            </div>
+          </div>
+
+          <div style="margin-top:10px;">
+            <button type="button" id="btn-test-notify">发送一条测试通知</button>
+            <span class="hint" style="margin-left:8px;">先"保存全局设置"，再点这个测试</span>
+          </div>
+        </fieldset>
+
+        <fieldset>
           <legend>比特浏览器 BitBrowser 连接设置</legend>
           <div class="form-grid">
             <div class="field">
