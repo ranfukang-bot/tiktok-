@@ -196,6 +196,16 @@ export function installTkqInPage(config) {
     selection.addRange(range);
   }
 
+  function moveCaretToEnd(editable) {
+    const selection = window.getSelection();
+    if (!selection) throw new Error('浏览器无法取得文案框选区');
+    const range = document.createRange();
+    range.selectNodeContents(editable);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
   async function waitForCaptionEmpty(timeout = 1500) {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
@@ -358,13 +368,31 @@ export function installTkqInPage(config) {
           allFound = false;
           log(`⚠️ 已点击 #${keyword}，但文案框里没有确认到该标签，需要人工检查`);
         }
+        continue;
+      }
+
+      // 新账号/新环境从没发过带这个标签的作品，TikTok还没有历史记录可推荐，
+      // 建议面板里不会出现对应的chip。这种情况直接把话题文字打进去，
+      // 用的是clearCaptionSafely同一套对Draft.js安全的插入方式，不能用后就退化成报错。
+      log(`没找到历史话题 #${keyword} 的建议项（新账号很常见），改为直接输入`);
+      moveCaretToEnd(editable);
+      const typed = document.execCommand('insertText', false, `#${keyword} `);
+      if (!typed) {
+        allFound = false;
+        log(`⚠️ 直接输入 #${keyword} 失败，浏览器没有执行插入命令，需要人工检查`);
+        continue;
+      }
+      const typedInserted = await waitForCaptionHashtag(keyword);
+      if (typedInserted) {
+        assertCaptionSafe(`输入 #${keyword} 后检查`, false);
+        log(`已直接输入并确认话题: #${keyword}`);
       } else {
         allFound = false;
-        log(`⚠️ 没找到历史话题 #${keyword}，可能是这个账号还没用过这个标签，或者面板没弹出来`);
+        log(`⚠️ 已输入 #${keyword}，但文案框里没有确认到该标签，需要人工检查`);
       }
     }
     if (!allFound) {
-      throw new Error('部分历史话题标签没有成功加入，已自动暂停，避免带错误文案发布');
+      throw new Error('部分话题标签没有成功加入（历史标签点击或直接输入都失败了），已自动暂停，避免带错误文案发布');
     }
 
     const editable = getCaptionEditable();
