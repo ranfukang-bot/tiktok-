@@ -542,24 +542,43 @@ export function installTkqInPage(config) {
 
   async function setAiDisclosure() {
     assertProductPickerClosed('设置AI声明');
-    const findAiLabel = () => findByText('span', config.text.aiDisclosureLabel) || findByText('div', config.text.aiDisclosureLabel);
 
-    let label = findAiLabel();
-    if (!label || !isVisible(label)) {
+    // 之前靠 isVisible(label) 判断"要不要点展开"不可靠：折叠区域用的是
+    // max-height:0 + overflow:hidden 之类的CSS折叠，被折叠起来的元素自己的
+    // getBoundingClientRect 未必是0（裁剪是父级视觉层面的事，不影响子元素的
+    // 布局盒模型），导致isVisible()误判成"已经可见"，从而跳过了点击"展开更多"
+    // 这一步——这正是"连展开都没展开"的根因。改成直接看容器class里有没有
+    // "collapsed"，这是抓到的真实DOM给出的明确信号，比猜可见性靠谱。
+    const getAdvancedContainer = () => document.querySelector('[data-e2e="advanced_settings_container"]');
+    const isCollapsed = () => {
+      const container = getAdvancedContainer();
+      return Boolean(container && container.classList.contains('collapsed'));
+    };
+
+    if (isCollapsed()) {
       const expandTrigger = await waitForOrNull(() => {
-        const c = document.querySelector('[data-e2e="advanced_settings_container"] .more-btn');
-        if (c) return c;
+        const container = getAdvancedContainer();
+        const btn = container ? container.querySelector('.more-btn') : null;
+        if (btn) return btn;
         for (const t of config.text.showMoreButtons) {
-          const btn = findClickableByText(t, false);
-          if (btn) return btn;
+          const b = findClickableByText(t, false);
+          if (b) return b;
         }
         return null;
       }, 5000);
-      if (expandTrigger) {
-        fireClick(expandTrigger);
-        await sleep(500);
+      if (!expandTrigger) {
+        throw new Error('设置AI声明：高级设置区域是折叠状态，但没找到"展开更多"按钮，需要人工检查页面结构');
       }
+      fireClick(expandTrigger);
+      const expanded = await waitForOrNull(() => (!isCollapsed() ? true : null), 3000, 100);
+      if (!expanded) {
+        throw new Error('设置AI声明：点击"展开更多"后高级设置区域没有展开，需要人工检查页面结构');
+      }
+      log('已展开高级设置区域');
+      await sleep(300);
     }
+
+    const findAiLabel = () => findByText('span', config.text.aiDisclosureLabel) || findByText('div', config.text.aiDisclosureLabel);
 
     // 实际抓到的DOM结构里，role="switch"的是那个隐藏的<input>，跟可见的thumb是
     // 兄弟节点（都在同一个 Switch__content 容器下），不是thumb的祖先节点，
