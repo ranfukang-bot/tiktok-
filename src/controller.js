@@ -2,6 +2,7 @@ import { loadSettings, loadAccounts, loadAllAccounts } from './config.js';
 import { tickAll, isAccountProcessing, syncAccountFolder } from './orchestrator.js';
 import { getState, setState } from './stateStore.js';
 import { createLogger } from './logger.js';
+import { deletePublishedFile } from './folderScanner.js';
 
 let running = false;
 let loopPromise = null;
@@ -74,15 +75,19 @@ export function getStatus() {
   return { running, lastTickAt, lastTickError, settingsError, accounts };
 }
 
-export function resolveUncertain(accountName, decision) {
+export async function resolveUncertain(accountName, decision) {
   const state = getState(accountName);
   if (state.pauseCode !== 'uncertain_publish') {
     throw new Error(`账号 "${accountName}" 当前不是"发布结果不确定"状态`);
   }
   const settings = loadSettings();
+  let publishedItem = null;
   if (decision === 'published') {
     const uncertainIndex = state.doneIndex + 1;
-    if (uncertainIndex < state.items.length) state.doneIndex = uncertainIndex;
+    if (uncertainIndex < state.items.length) {
+      publishedItem = state.items[uncertainIndex];
+      state.doneIndex = uncertainIndex;
+    }
     state.nextTime = Date.now() + settings.minIntervalMs + Math.random() * (settings.maxIntervalMs - settings.minIntervalMs);
   } else {
     state.nextTime = Date.now();
@@ -93,6 +98,14 @@ export function resolveUncertain(accountName, decision) {
   state.pendingIndex = null;
   state.pendingSince = null;
   setState(accountName, state);
+
+  if (publishedItem && settings.deleteAfterPublish !== false) {
+    const account = loadAllAccounts().find((a) => a.name === accountName);
+    if (account) {
+      const log = createLogger(accountName);
+      await deletePublishedFile(account.videoFolder, publishedItem, log);
+    }
+  }
 }
 
 // 手动触发一次文件夹扫描，不需要先启动整个自动发布循环，方便添加账号后马上验证路径对不对。

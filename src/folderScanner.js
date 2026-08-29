@@ -1,4 +1,4 @@
-import { readdir, stat } from 'node:fs/promises';
+import { readdir, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 // 与原油猴脚本保持一致的规则：文件名(去扩展名、去" (1)"这类重名后缀)就是商品ID。
@@ -34,6 +34,28 @@ export async function scanDirectory(rootDir, extensions, prefix = '') {
     }
   }
   return results;
+}
+
+// 队列里的相对路径统一用 "/" 分隔（跨平台好存好比对），落到磁盘操作时才转成
+// 当前系统的分隔符——跟 tiktokStudio.js 里选文件用的是同一套换算，抽出来共用。
+export function resolveItemPath(videoFolder, item) {
+  return path.join(videoFolder, item.relativePath.split('/').join(path.sep));
+}
+
+// 确认发布成功后删掉源文件，让文件夹本身就是"待发布清单"：夹子里还有视频就是没发完，
+// 没了就该加新的。删除失败(文件被占用/已经手动删了/权限问题)只当警告处理，不能因为
+// 删文件这种收尾动作失败就把整条发布流程搞挂——发布本身已经成功了。
+export async function deletePublishedFile(videoFolder, item, log) {
+  const absolutePath = resolveItemPath(videoFolder, item);
+  try {
+    await unlink(absolutePath);
+    if (log) log.info(`已删除发布成功的视频文件: ${item.relativePath}`);
+    return true;
+  } catch (err) {
+    if (err.code === 'ENOENT') return true; // 已经不在了，等于达到目的
+    if (log) log.warn(`发布成功了，但删除源文件失败(不影响发布结果): ${item.relativePath} - ${err.message}`);
+    return false;
+  }
 }
 
 function queueIdentity(item) {

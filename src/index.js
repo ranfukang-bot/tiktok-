@@ -1,12 +1,9 @@
 import { runOrchestrator } from './orchestrator.js';
-import { getState, setState } from './stateStore.js';
+import { getState } from './stateStore.js';
 import { loadAccounts, ensureConfigFiles } from './config.js';
+import { resolveUncertain as resolveUncertainState } from './controller.js';
 
 ensureConfigFiles();
-
-function randomInterval(min, max) {
-  return min + Math.random() * (max - min);
-}
 
 async function resolveUncertain(accountName, decision) {
   const accounts = loadAccounts();
@@ -23,21 +20,12 @@ async function resolveUncertain(accountName, decision) {
     return;
   }
 
-  if (decision === 'published') {
-    const uncertainIndex = state.doneIndex + 1;
-    if (uncertainIndex < state.items.length) state.doneIndex = uncertainIndex;
-    state.nextTime = Date.now() + randomInterval(5400000, 9000000);
-    console.log('✅ 已按"上次实际发布成功"处理，将从下一条继续');
-  } else {
-    state.nextTime = Date.now();
-    console.log('↻ 已按"上次没有发布"处理，将自动重试当前视频');
-  }
-  state.paused = false;
-  state.pauseReason = '';
-  state.pauseCode = '';
-  state.pendingIndex = null;
-  state.pendingSince = null;
-  setState(accountName, state);
+  await resolveUncertainState(accountName, decision);
+  console.log(
+    decision === 'published'
+      ? '✅ 已按"上次实际发布成功"处理，将从下一条继续（如果开着自动删除，源文件也已经删掉）'
+      : '↻ 已按"上次没有发布"处理，将自动重试当前视频'
+  );
 }
 
 const [, , command, ...rest] = process.argv;

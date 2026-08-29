@@ -128,11 +128,11 @@ app.post('/api/accounts/:name/resume', (req, res) => {
   }
 });
 
-app.post('/api/accounts/:name/resolve', (req, res) => {
+app.post('/api/accounts/:name/resolve', async (req, res) => {
   try {
     const { decision } = req.body || {};
     if (decision !== 'published' && decision !== 'retry') throw new Error('decision 必须是 published 或 retry');
-    controller.resolveUncertain(req.params.name, decision);
+    await controller.resolveUncertain(req.params.name, decision);
     res.json({ ok: true });
   } catch (err) {
     handleError(res, err);

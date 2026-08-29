@@ -3,7 +3,7 @@ import { loadSettings, loadAccounts, resolveText, resolveHashtags } from './conf
 import { createAdapter } from './browserAdapters/index.js';
 import { createLogger } from './logger.js';
 import { getState, setState, pause, clearFailures } from './stateStore.js';
-import { scanDirectory, syncFilesIntoQueue } from './folderScanner.js';
+import { scanDirectory, syncFilesIntoQueue, deletePublishedFile } from './folderScanner.js';
 import { runOneUploadCycle } from './browser/tiktokStudio.js';
 import { classifyError, retryDelayMs, maxRetries } from './errorPolicy.js';
 import { notify } from './notifier.js';
@@ -136,6 +136,9 @@ async function processAccountOnce(account, settings, adapter, log) {
       setState(account.name, latest);
       log.info(`本条发布完成，下一条将在约 ${fmtMinutes(latest.nextTime - Date.now())} 分钟后开始`);
       clearFailures(account.name);
+      if (settings.deleteAfterPublish !== false) {
+        await deletePublishedFile(account.videoFolder, item, log);
+      }
     } else {
       await pauseAndNotify(account, settings, {
         reason: '点击发布后没等到跳转，这一条到底发出去没有不确定，已停下等你确认（不会自动重试，避免同一条发两遍）',

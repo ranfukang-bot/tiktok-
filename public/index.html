@@ -50,6 +50,13 @@
             <label>文件夹检查间隔（秒）</label>
             <input type="number" min="5" step="5" id="s-scan-seconds" required>
           </div>
+          <div class="field span2">
+            <label><input type="checkbox" id="s-delete-after-publish"> 确认发布成功后，自动删除源视频文件</label>
+            <div class="hint">
+              开着的话，文件夹本身就是"待发布清单"：里面还有视频=没发完，空了就该加新的，不用再对照进度列表。
+              只在真正确认发布成功那一刻才删（不确定/失败/暂停都不会删）——但这是真删，不会进回收站。
+            </div>
+          </div>
         </div>
 
         <fieldset>

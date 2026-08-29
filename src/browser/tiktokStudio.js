@@ -1,5 +1,5 @@
-import path from 'node:path';
 import { installTkqInPage } from './injected.js';
+import { resolveItemPath } from '../folderScanner.js';
 
 const UPLOAD_URL = 'https://www.tiktok.com/tiktokstudio/upload?from=upload';
 const PUBLISH_CONFIRM_TIMEOUT_MS = 45000;
@@ -73,7 +73,7 @@ export async function runOneUploadCycle({ page, account, item, config, log, befo
   await ensureOnUploadPage(page, log);
   await page.evaluate(installTkqInPage, config);
 
-  const absolutePath = path.join(account.videoFolder, item.relativePath.split('/').join(path.sep));
+  const absolutePath = resolveItemPath(account.videoFolder, item);
   log.info(`开始处理: ${item.relativePath} -> 商品ID ${item.productId}`);
 
   const fileInput = page.locator('input[type="file"][accept="video/*"]').first();

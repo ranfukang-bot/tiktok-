@@ -386,6 +386,7 @@ function fillSettingsForm(settings) {
   document.getElementById('s-max-hours').value = (settings.maxIntervalMs / 3600000).toFixed(2);
   document.getElementById('s-concurrency').value = settings.concurrency || 1;
   document.getElementById('s-scan-seconds').value = Math.round((settings.folderScanIntervalMs || 30000) / 1000);
+  document.getElementById('s-delete-after-publish').checked = settings.deleteAfterPublish !== false;
 
   const notif = settings.notifications || {};
   document.getElementById('s-notify-enabled').checked = Boolean(notif.enabled);
@@ -420,6 +421,7 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
   settings.maxIntervalMs = Math.round(Number(document.getElementById('s-max-hours').value) * 3600000);
   settings.concurrency = Number(document.getElementById('s-concurrency').value);
   settings.folderScanIntervalMs = Number(document.getElementById('s-scan-seconds').value) * 1000;
+  settings.deleteAfterPublish = document.getElementById('s-delete-after-publish').checked;
   settings.notifications = {
     ...(currentSettings.notifications || {}),
     enabled: document.getElementById('s-notify-enabled').checked,
