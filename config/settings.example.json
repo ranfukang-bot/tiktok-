@@ -1,0 +1,36 @@
+{
+  "_说明": "复制为 settings.json 后按需修改。这个文件里放的是跨账号共用的默认值，单个账号可以在 accounts.json 里用 textOverrides / hashtagKeywords 覆盖。",
+
+  "minIntervalMs": 5400000,
+  "maxIntervalMs": 9000000,
+  "folderScanIntervalMs": 30000,
+  "concurrency": 1,
+
+  "videoExtensions": [".mp4", ".mov", ".avi", ".webm"],
+  "hashtagKeywords": ["fyp", "tiktok", "tiktokshop"],
+
+  "text": {
+    "_说明": "这些是 TikTok Studio 界面文案，跟账号的界面语言绑定（不是账号所在国家，是TikTok Studio实际显示的语言）。原脚本是照着印尼语界面(Bahasa Indonesia)扒下来的；如果某个账号显示的是英文/马来文/菲律宾英文界面，必须在 accounts.json 里用 textOverrides 覆盖，否则会因为文字对不上而找不到按钮。",
+    "nextButton": "Berikutnya",
+    "searchProductPlaceholder": "Cari produk",
+    "publishNowRadioLabel": "Sekarang",
+    "productConfirmButtons": ["Berikutnya", "Tambah", "Tambahkan", "Konfirmasi", "Simpan"],
+    "addProductButton": "Tambah",
+    "aiDisclosureLabel": "Konten yang dihasilkan AI",
+    "showMoreButtons": ["Tampilkan lebih banyak", "Tampilkan lainnya"],
+    "postButtonTexts": ["Posting", "Post"]
+  },
+
+  "adspower": {
+    "baseUrl": "http://local.adspower.net:50325",
+    "apiKey": ""
+  },
+
+  "hubstudio": {
+    "_说明": "Hubstudio 的本地API字段以你客户端里『开发者/接口文档』页面显示的为准；下面这些是通用默认值，第一次跑之前请对照客户端里的文档确认端点路径和返回字段名，见 README『Hubstudio 适配器需要你确认』一节。",
+    "baseUrl": "http://127.0.0.1:6873",
+    "appId": "",
+    "appSecret": "",
+    "groupCode": ""
+  }
+}

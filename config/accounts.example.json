@@ -1,0 +1,27 @@
+[
+  {
+    "name": "马来一号",
+    "enabled": true,
+    "browser": "adspower",
+    "profileId": "1786785348",
+    "videoFolder": "/path/to/videos/malaysia-1",
+    "hashtagKeywords": ["fyp", "tiktok", "tiktokshop"]
+  },
+  {
+    "name": "菲律宾1号",
+    "enabled": true,
+    "browser": "hubstudio",
+    "containerCode": "223012801",
+    "videoFolder": "/path/to/videos/philippines-1",
+    "textOverrides": {
+      "nextButton": "Next",
+      "searchProductPlaceholder": "Search product",
+      "publishNowRadioLabel": "Now",
+      "productConfirmButtons": ["Next", "Add", "Confirm", "Save"],
+      "addProductButton": "Add",
+      "aiDisclosureLabel": "AI-generated content",
+      "showMoreButtons": ["Show more"],
+      "postButtonTexts": ["Post"]
+    }
+  }
+]

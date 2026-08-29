@@ -1,0 +1,6 @@
+node_modules/
+config/settings.json
+config/accounts.json
+state/*.json
+!state/.gitkeep
+*.log
