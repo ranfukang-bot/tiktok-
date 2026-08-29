@@ -1,114 +1,87 @@
-# TikTok Studio 批量发布 · 外部编排器
+# TikTok Studio 批量发布控制台
 
 替代原来那份装在每个指纹浏览器里的油猴脚本(`TikTokStudioBulkUploadV2`)。
 
-## 为什么换掉油猴脚本
+不用再改代码、不用敲命令：打开一个网页，账号、视频文件夹都在网页上填，点"启动自动发布"
+就交给它自己跑。原理是这个网页背后的程序通过 AdsPower / Hubstudio 的"本地API"连上你已经
+登录好、带好指纹的浏览器窗口，远程帮你操作 TikTok Studio——跟你自己手动点是一样的效果，
+只是不用人盯着。原脚本里那些踩过坑的细节（安全清空默认文案、商品挂车的多步弹窗、发布前
+检测、发布结果确认）都保留在里面。
 
-油猴脚本跑在每一个指纹浏览器的页面里，逻辑和状态都分散在各个浏览器实例里，每次改代码
-都要把新版本重新装/更新到每一个指纹浏览器，账号一多就很难维护。
+## 第一次使用
 
-这里改成：只在你的控制机上跑一个 Node.js 进程，通过指纹浏览器厂商提供的"本地API"拿到
-每个账号窗口的 CDP 调试地址，再用 Playwright 连上去远程操作——跟油猴脚本操作同一个
-已登录、已经带好指纹的浏览器窗口，效果一样，但代码只有一份，改一次全账号生效，不需要
-再往任何浏览器里装/更新插件。原脚本里那些踩过坑的细节（Draft.js文案安全清空、商品挂车
-多步弹窗、发布前后的各种检测/校验）基本原样保留在 `src/browser/injected.js` 里。
+1. 装一次 Node.js（如果电脑上没装过）：去 <https://nodejs.org> 下载"LTS"版本，一路下一步
+   安装即可，跟装普通软件一样，装完不用管它。
+2. 双击这个文件夹里的 **`start.bat`**（Windows）或 `start.command`（Mac）。
+   第一次运行会自动装一些必需的组件，等一会儿；装完会自动打开浏览器网页。
+3. 以后要用的时候，还是双击同一个文件启动就行。
 
-## 目录结构
+打开的网页就是控制台，长这样：顶部"启动自动发布/停止"按钮、账号列表、下面是全局设置和
+运行日志。所有操作都在网页上点，不需要再打开这份代码。
+
+## 添加账号
+
+网页上点"+ 添加账号"，填：
+
+- **账号名称**：随便起，用来区分，比如"马来一号"。
+- **用哪个指纹浏览器**：AdsPower 或 Hubstudio。
+- **环境ID**：
+  - AdsPower：环境列表里那一串数字ID（截图里"序号"旁边那个）。
+  - Hubstudio：环境的 containerCode（这个可以在 Hubstudio 客户端的环境详情里看到）。
+- **视频文件夹**：点"浏览…"弹出选择框选一个文件夹（Windows支持），或者直接从文件资源
+  管理器地址栏复制路径粘贴进去。文件夹里视频的**文件名就是商品ID**，比如 `123456.mp4`。
+- **话题标签**：要依次点击的历史话题，逗号分隔，默认 `fyp,tiktok,tiktokshop`。
+- **TikTok Studio 界面语言**：这个很重要，跟"账号所在国家"没关系，跟"TikTok Studio
+  实际显示的语言"有关系。默认是印尼语(Bahasa Indonesia)，如果某个账号显示的是英文界面
+  就选"英文"，两者都不是就选"自定义"，把对应的按钮文字填进去。语言选错的后果只是脚本
+  找不到按钮、报错暂停，**不会因此发错内容**。
+
+保存后账号就出现在列表里了，点"启动自动发布"就会开始按各账号自己的随机间隔轮流处理。
+
+## 全局设置
+
+网页上"全局设置"里可以调：
+
+- 发布间隔（最短/最长，单位小时，默认 1.5~2.5 小时）
+- 同时最多几个账号一起跑（建议先填 1，最稳妥）
+- AdsPower / Hubstudio 的本地API连接地址
+
+**Hubstudio 有一处需要你自己核对一下**：Hubstudio 官方接口文档这边环境访问不到，代码里
+"打开环境"接口的路径和字段名是按公开资料拼的最佳猜测。如果账号一直连不上、报错里提到
+"没找到调试端口字段"之类的话，打开 Hubstudio 客户端左侧的「开发者」菜单，找到对应接口
+文档核对一下路径/字段名，填到"全局设置 → Hubstudio连接设置 → 高级"里就行，不用改代码。
+报错信息里会把接口实际返回的内容打印出来，照着填即可。
+
+## 需要你看一眼网页的情况
+
+- **"发布结果不确定"**：点了发布按钮后一直没检测到跳转成功，为了不重复发布，脚本会暂停
+  这个账号，账号那一行会出现"确认已发布"/"确认未发布，重试"两个按钮。你打开对应的指纹
+  浏览器看一眼 TikTok 后台的内容列表，点其中一个就行。
+- **其它报错暂停**：账号那一行会显示暂停原因（比如某个按钮找不到、文案没清空干净），
+  底部日志区能看到更详细的记录。排查完点"继续"恢复。
+
+## 目录说明（不需要动，了解一下就行）
 
 ```
-config/
-  settings.example.json   全局默认配置（复制成 settings.json 后改）
-  accounts.example.json   账号列表（复制成 accounts.json 后改）
-src/
-  index.js                CLI 入口: run / resolve
-  orchestrator.js          调度循环：扫描各账号文件夹、判断是否到点、跑一轮发布
-  stateStore.js             每个账号的进度状态，存成 state/<账号名>.json
-  folderScanner.js          扫描视频文件夹、文件名->商品ID、增量对比队列
-  browserAdapters/          adspower.js / hubstudio.js：跟指纹浏览器本地API对接，拿CDP地址
-  browser/
-    injected.js              注入到 TikTok Studio 页面里跑的自动化逻辑（原脚本核心搬过来的）
-    tiktokStudio.js           Node端用 Playwright 驱动一次完整的"传视频->发布"流程
-state/                     运行时生成的每账号进度文件（不进git）
+start.bat / start.command   双击启动
+config/                     网页上的设置最终存在这里 (settings.json / accounts.json)
+state/                      每个账号的发布进度，网页崩了/重启都不会丢
+public/                     控制台网页本体
+src/                        后台逻辑
 ```
 
-## 安装
+## 进阶：命令行方式（不需要网页界面的话）
+
+如果你更习惯命令行，也可以不用网页，直接用 CLI：
 
 ```bash
 npm install
 cp config/settings.example.json config/settings.json
 cp config/accounts.example.json config/accounts.json
+# 编辑这两个 json 文件
+npm run cli                                          # 启动全自动编排器（前台运行）
+node src/index.js resolve "账号名" --published        # 人工确认上次其实发布成功了
+node src/index.js resolve "账号名" --retry             # 人工确认上次没有发布，重试当前这条
 ```
 
-然后编辑这两个文件。
-
-## AdsPower 账号配置
-
-1. AdsPower 客户端里打开"本地API"（团队版功能），确认端口是 50325（默认）。
-2. `accounts.json` 里对应账号填 `"browser": "adspower"` 和 `"profileId"`（环境列表里那个ID，
-   截图里"序号"旁边那一串数字）。
-
-## Hubstudio 账号配置 —— 这部分需要你确认一下
-
-Hubstudio 官方接口文档站在当前环境里访问不到，`src/browserAdapters/hubstudio.js` 里的
-接口路径/字段名是按公开资料拼的最佳猜测（不保证100%准确）。用之前请：
-
-1. 打开 Hubstudio 客户端 → 左侧「开发者」（就是你截图里能看到的那个入口）
-2. 找到"打开环境/启动浏览器"接口的文档，核对：
-   - 请求路径和方法（代码里默认 `POST /api/v1/browser/open`）
-   - 环境ID的请求体字段名（代码里默认 `containerCode`）
-   - 返回值里调试端口的字段名（代码里默认 `data.debuggingPort`）
-3. 如果对不上，不用改代码，改 `config/settings.json` 里的 `hubstudio` 段落：
-   ```json
-   "hubstudio": {
-     "baseUrl": "http://127.0.0.1:6873",
-     "openPath": "/api/v1/browser/open",
-     "requestIdField": "containerCode",
-     "responseDebugPortField": "debuggingPort"
-   }
-   ```
-4. `accounts.json` 里对应账号填 `"browser": "hubstudio"` 和 `"containerCode"`（环境ID）。
-
-第一次跑的时候留意日志：如果返回的JSON里确实没有猜对的字段名，报错信息会把接口实际返回的
-内容打印出来，照着改一下配置就行。
-
-## 界面文案要跟账号实际语言对上
-
-`config/settings.json` 里 `text` 段落的按钮文字是照着印尼语界面(Bahasa Indonesia)扒的，
-跟"账号是哪个国家"没关系，跟"TikTok Studio 实际显示的语言"有关系。如果某个账号的
-TikTok Studio 界面是英文/马来文，要在 `accounts.json` 那个账号下加 `textOverrides`
-覆盖对应文字，`accounts.example.json` 里"菲律宾1号"就是英文界面的例子。不覆盖的话，
-脚本会因为按钮文字对不上而找不到元素，直接报错暂停（不会瞎点）。
-
-## 运行
-
-```bash
-npm start          # 等价于 node src/index.js run
-```
-
-会一直跑在前台，按账号各自的随机间隔(默认1.5~2.5小时，settings.json 里可调)轮流发布。
-建议用 `pm2` / `systemd` / `screen` 之类的方式常驻后台。
-
-`config/settings.json` 里的 `concurrency` 控制同时打开几个指纹浏览器窗口一起跑，默认1
-(完全串行，最稳)。
-
-## 人工介入的场景
-
-- **`uncertain_publish`**：点了发布按钮后45秒内没检测到跳转到内容页，结果不确定，脚本会
-  暂停这个账号（不会自动重试，避免重复发布）。你打开对应指纹浏览器人工看一眼TikTok内容
-  列表，确认后运行：
-  ```bash
-  node src/index.js resolve "账号名" --published   # 其实发布成功了，跳到下一条
-  node src/index.js resolve "账号名" --retry        # 没发布成功，重试当前这条
-  ```
-- **其它报错暂停**（比如文案没清空干净、商品没选中、找不到某个按钮）：日志会打印具体原因，
-  账号名对应的 `state/<账号名>.json` 里 `pauseReason` 也有记录。排查完手动把该文件里的
-  `paused` 改成 `false`（或者删掉这个状态文件重新扫描）即可恢复。
-
-## 和原油猴脚本的行为差异
-
-- 文件夹扫描直接用 Node 的文件系统权限，不需要浏览器的"选择文件夹"授权弹窗。
-- 发布完成后回到上传页，优先复用原脚本"点击左侧上传按钮"的方式（更像真人操作），失败了
-  下一轮会退回直接跳转链接。
-- 原脚本里"暂停当前任务"的面板按钮在这个版本里去掉了；单次上传流程执行中途不支持从外部
-  打断，如果要临时停手，等当前这条跑完，再把对应账号在 `accounts.json` 里 `enabled` 设成
-  `false` 或者把状态文件标成 `paused`。
+两种方式用的是同一份 `config/*.json`，网页和命令行改的是同一份配置，不会冲突。

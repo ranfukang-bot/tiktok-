@@ -14,6 +14,11 @@ function randomInterval(min, max) {
   return min + Math.random() * (max - min);
 }
 
+const processingAccounts = new Set();
+export function isAccountProcessing(name) {
+  return processingAccounts.has(name);
+}
+
 async function syncAccountFolder(account, settings, log) {
   const state = getState(account.name);
   const records = await scanDirectory(account.videoFolder, settings.videoExtensions);
@@ -110,7 +115,12 @@ async function tickAccount(settings, account, adapters) {
     if (Date.now() < fresh.nextTime) return;
 
     const adapter = adapters.get(account.browser);
-    await processAccountOnce(account, settings, adapter, log);
+    processingAccounts.add(account.name);
+    try {
+      await processAccountOnce(account, settings, adapter, log);
+    } finally {
+      processingAccounts.delete(account.name);
+    }
   } catch (err) {
     log.error(`出错: ${err.message}`);
     pause(account.name, err.message, err.code || 'runtime');
@@ -122,23 +132,30 @@ export async function tick(settings, accounts, adapters) {
   await Promise.all(accounts.map((account) => tickAccount(settings, account, adapters)));
 }
 
-export async function runOrchestrator() {
-  const settings = loadSettings();
-  const accounts = loadAccounts();
+function buildAdapters(settings, accounts) {
   const adapters = new Map();
   for (const kind of new Set(accounts.map((a) => a.browser))) {
     adapters.set(kind, createAdapter(kind, settings));
   }
+  return adapters;
+}
 
+// 账号分组后组内并发跑，组间顺序跑，避免同一时刻启动过多指纹浏览器窗口。
+export async function tickAll(settings, accounts) {
+  const adapters = buildAdapters(settings, accounts);
   const concurrency = settings.concurrency || 1;
-  console.log(`已加载 ${accounts.length} 个账号，并发数=${concurrency}，每 ${settings.folderScanIntervalMs / 1000}s 检查一次。Ctrl+C 退出。`);
+  for (let i = 0; i < accounts.length; i += concurrency) {
+    const batch = accounts.slice(i, i + concurrency);
+    await tick(settings, batch, adapters);
+  }
+}
 
-  // 简单起见：账号分组后组内并发跑，组间顺序跑，避免同一时刻启动过多指纹浏览器窗口。
+export async function runOrchestrator() {
+  const settings = loadSettings();
+  const accounts = loadAccounts();
+  console.log(`已加载 ${accounts.length} 个账号，并发数=${settings.concurrency || 1}，每 ${settings.folderScanIntervalMs / 1000}s 检查一次。Ctrl+C 退出。`);
   while (true) {
-    for (let i = 0; i < accounts.length; i += concurrency) {
-      const batch = accounts.slice(i, i + concurrency);
-      await tick(settings, batch, adapters);
-    }
+    await tickAll(loadSettings(), loadAccounts());
     await sleep(settings.folderScanIntervalMs);
   }
 }

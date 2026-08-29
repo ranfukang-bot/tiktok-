@@ -1,6 +1,8 @@
 import { runOrchestrator } from './orchestrator.js';
 import { getState, setState } from './stateStore.js';
-import { loadAccounts } from './config.js';
+import { loadAccounts, ensureConfigFiles } from './config.js';
+
+ensureConfigFiles();
 
 function randomInterval(min, max) {
   return min + Math.random() * (max - min);

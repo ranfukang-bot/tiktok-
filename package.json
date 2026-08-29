@@ -2,13 +2,16 @@
   "name": "tiktok-studio-auto-publish",
   "version": "1.0.0",
   "private": true,
-  "description": "外部编排器：通过指纹浏览器(AdsPower/Hubstudio)的本地API拿到CDP调试端口，用Playwright连接后驱动TikTok Studio批量发布，替代原来分散在每个指纹浏览器里的油猴脚本。",
+  "description": "TikTok Studio 批量发布控制台：本地网页界面 + Playwright/CDP 驱动指纹浏览器(AdsPower/Hubstudio)，替代原来分散在每个指纹浏览器里的油猴脚本。",
   "type": "module",
   "scripts": {
-    "start": "node src/index.js run",
+    "start": "node src/server.js",
+    "cli": "node src/index.js run",
     "resolve": "node src/index.js resolve"
   },
   "dependencies": {
+    "express": "^4.22.2",
+    "open": "^10.2.0",
     "playwright-core": "^1.47.0"
   },
   "engines": {
