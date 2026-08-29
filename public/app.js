@@ -74,6 +74,8 @@ function renderAccounts() {
       stateHtml = `<span class="state processing">正在处理…</span>`;
     } else if (runtime.paused) {
       stateHtml = `<span class="state paused">已暂停</span>`;
+    } else if (runtime.total === 0) {
+      stateHtml = `<span class="state paused">还没检测到视频，点"立即扫描"看看</span>`;
     } else if (runtime.remaining === 0) {
       stateHtml = `<span class="state ok">队列已跑完，等待新视频</span>`;
     } else {
@@ -93,6 +95,7 @@ function renderAccounts() {
         actions.push(`<button data-action="pause" data-name="${escapeAttr(account.name)}">暂停</button>`);
       }
     }
+    if (enabled) actions.push(`<button data-action="scan" data-name="${escapeAttr(account.name)}">立即扫描</button>`);
     actions.push(`<button data-action="edit" data-idx="${idx}">编辑</button>`);
 
     card.innerHTML = `
@@ -128,6 +131,22 @@ document.getElementById('accounts-list').addEventListener('click', async (e) => 
       return;
     }
     const name = btn.dataset.name;
+    if (action === 'scan') {
+      btn.disabled = true;
+      btn.textContent = '扫描中…';
+      try {
+        const result = await api('POST', `/api/accounts/${encodeURIComponent(name)}/scan`);
+        if (result.deferred) {
+          alert('这个账号正等待上一条的发布结果确认，暂时不能扫描文件夹。');
+        } else {
+          alert(`扫描完成：新增 ${result.added ?? 0} 个，移除 ${result.removed ?? 0} 个，队列共 ${result.total ?? 0} 个视频。\n如果这里是0，说明程序没能在填的那个文件夹路径里找到视频文件，回去编辑账号核对一下路径。`);
+        }
+      } catch (err) {
+        alert('扫描失败：' + err.message);
+      }
+      await refreshStatus();
+      return;
+    }
     if (action === 'pause') await api('POST', `/api/accounts/${encodeURIComponent(name)}/pause`);
     if (action === 'resume') await api('POST', `/api/accounts/${encodeURIComponent(name)}/resume`);
     if (action === 'resolve-published') await api('POST', `/api/accounts/${encodeURIComponent(name)}/resolve`, { decision: 'published' });
@@ -278,6 +297,13 @@ accountForm.addEventListener('submit', async (e) => {
     accountsConfig = next;
     closeAccountModal();
     renderAccounts();
+    // 保存后马上扫一次文件夹，不用等启动自动发布或等30秒的定时扫描才知道路径填对没对。
+    try {
+      await api('POST', `/api/accounts/${encodeURIComponent(account.name)}/scan`);
+    } catch {
+      // 扫描失败不影响保存本身，账号卡片上的状态/日志区会体现出来
+    }
+    await refreshStatus();
   } catch (err) {
     const el = document.getElementById('account-form-error');
     el.textContent = err.message;

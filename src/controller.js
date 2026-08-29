@@ -1,6 +1,7 @@
-import { loadSettings, loadAccounts } from './config.js';
-import { tickAll, isAccountProcessing } from './orchestrator.js';
+import { loadSettings, loadAccounts, loadAllAccounts } from './config.js';
+import { tickAll, isAccountProcessing, syncAccountFolder } from './orchestrator.js';
 import { getState, setState } from './stateStore.js';
+import { createLogger } from './logger.js';
 
 let running = false;
 let loopPromise = null;
@@ -89,6 +90,15 @@ export function resolveUncertain(accountName, decision) {
   state.pendingIndex = null;
   state.pendingSince = null;
   setState(accountName, state);
+}
+
+// 手动触发一次文件夹扫描，不需要先启动整个自动发布循环，方便添加账号后马上验证路径对不对。
+export async function scanAccountNow(accountName) {
+  const account = loadAllAccounts().find((a) => a.name === accountName);
+  if (!account) throw new Error(`没找到账号 "${accountName}"`);
+  const settings = loadSettings();
+  const log = createLogger(accountName);
+  return syncAccountFolder(account, settings, log);
 }
 
 export function setAccountPaused(accountName, paused) {

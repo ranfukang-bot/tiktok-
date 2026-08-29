@@ -98,6 +98,15 @@ app.put('/api/accounts', (req, res) => {
   }
 });
 
+app.post('/api/accounts/:name/scan', async (req, res) => {
+  try {
+    const result = await controller.scanAccountNow(req.params.name);
+    res.json({ ok: true, ...(result || {}) });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
 app.post('/api/accounts/:name/pause', (req, res) => {
   try {
     controller.setAccountPaused(req.params.name, true);

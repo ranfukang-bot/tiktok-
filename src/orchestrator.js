@@ -19,16 +19,30 @@ export function isAccountProcessing(name) {
   return processingAccounts.has(name);
 }
 
-async function syncAccountFolder(account, settings, log) {
+export async function syncAccountFolder(account, settings, log) {
   const state = getState(account.name);
-  const records = await scanDirectory(account.videoFolder, settings.videoExtensions);
+  let records;
+  try {
+    records = await scanDirectory(account.videoFolder, settings.videoExtensions);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      throw new Error(`找不到文件夹 "${account.videoFolder}"，请检查路径是否正确、文件夹是否还在`);
+    }
+    throw err;
+  }
   const result = syncFilesIntoQueue(state, records);
   setState(account.name, state);
-  if (result.deferred) return;
+  if (result.deferred) {
+    log.info('本条正在等待发布结果确认，暂不同步文件夹');
+    return result;
+  }
   if (result.added || result.removed) {
     log.info(`文件夹同步：新增 ${result.added} 个，移除 ${result.removed} 个，队列共 ${result.total} 个`);
     if (result.resumed) log.info('▶️ 已移除缺失文件的旧记录，自动发布已恢复');
+  } else {
+    log.info(`扫描完成，文件夹和队列一致（共 ${result.total} 个）`);
   }
+  return result;
 }
 
 async function findOrOpenStudioPage(browser) {
