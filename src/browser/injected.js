@@ -357,61 +357,65 @@ export function installTkqInPage(config) {
     log(`视频和默认标题均已就绪 ✅（待清空：${stableText.slice(0, 80)}）`);
   }
 
-  async function fillCaption() {
+  // ===== 文案/话题标签：拆成小步骤，方便Node端在"直接输入"这条路径上改用
+  // Playwright真实键盘事件(page.keyboard.type)而不是这里的execCommand批量插入。
+  // 原因见 clickHashtagChipIfPresent 下面那条注释：实测发现批量插入偶尔会导致
+  // TikTok自己的话题识别逻辑把同一个词渲染出两份（比如"#fyp #fyp"）。
+
+  async function clearCaption() {
     await clearCaptionSafely();
+  }
 
-    let allFound = true;
-    for (const keyword of config.hashtagKeywords) {
-      const editable = await waitFor(getCaptionEditable);
-      editable.focus();
-      await sleep(300);
-      checkForAppCrash();
+  // 尝试点击"历史标签"建议面板里已有的chip；返回是否成功。找不到chip时返回false，
+  // 由Node端改用真实键盘输入这条路径，这里不再自己做execCommand批量插入。
+  async function clickHashtagChipIfPresent(keyword) {
+    const editable = await waitFor(getCaptionEditable);
+    editable.focus();
+    await sleep(300);
+    checkForAppCrash();
 
-      const chip = Array.from(document.querySelectorAll('.suggest-item')).find(
-        (el) => isVisible(el) && el.textContent.replace(/\s/g, '').toLowerCase() === ('#' + keyword).toLowerCase()
-      );
-      if (chip) {
-        fireClick(chip);
-        const inserted = await waitForCaptionHashtag(keyword);
-        if (inserted) {
-          assertCaptionSafe(`添加 #${keyword} 后检查`, false);
-          log(`已添加并确认历史话题: #${keyword}`);
-        } else {
-          allFound = false;
-          log(`⚠️ 已点击 #${keyword}，但文案框里没有确认到该标签，需要人工检查`);
-        }
-        continue;
-      }
+    const chip = Array.from(document.querySelectorAll('.suggest-item')).find(
+      (el) => isVisible(el) && el.textContent.replace(/\s/g, '').toLowerCase() === ('#' + keyword).toLowerCase()
+    );
+    if (!chip) return false;
 
-      // 新账号/新环境从没发过带这个标签的作品，TikTok还没有历史记录可推荐，
-      // 建议面板里不会出现对应的chip。这种情况直接把话题文字打进去，
-      // 用的是clearCaptionSafely同一套对Draft.js安全的插入方式，不能用后就退化成报错。
-      log(`没找到历史话题 #${keyword} 的建议项（新账号很常见），改为直接输入`);
-      moveCaretToEnd(editable);
-      const typed = document.execCommand('insertText', false, `#${keyword} `);
-      if (!typed) {
-        allFound = false;
-        log(`⚠️ 直接输入 #${keyword} 失败，浏览器没有执行插入命令，需要人工检查`);
-        continue;
-      }
-      const typedInserted = await waitForCaptionHashtag(keyword);
-      if (typedInserted) {
-        assertCaptionSafe(`输入 #${keyword} 后检查`, false);
-        log(`已直接输入并确认话题: #${keyword}`);
-      } else {
-        allFound = false;
-        log(`⚠️ 已输入 #${keyword}，但文案框里没有确认到该标签，需要人工检查`);
-      }
+    fireClick(chip);
+    const inserted = await waitForCaptionHashtag(keyword);
+    if (!inserted) {
+      throw new Error(`已点击 #${keyword} 建议项，但文案框里没有确认到该标签，需要人工检查`);
     }
-    if (!allFound) {
-      throw new Error('部分话题标签没有成功加入（历史标签点击或直接输入都失败了），已自动暂停，避免带错误文案发布');
-    }
+    assertCaptionSafe(`添加 #${keyword} 后检查`, false);
+    log(`已添加并确认历史话题: #${keyword}`);
+    return true;
+  }
 
+  // 找不到历史标签chip时，Node端会先调用这个把光标定位好，再用
+  // page.keyboard.type() 逐字符真实输入（不是这里批量execCommand插入）。
+  async function focusCaptionEditorForTyping() {
+    const editable = await waitFor(getCaptionEditable);
+    editable.focus();
+    moveCaretToEnd(editable);
+    await sleep(150);
+    return true;
+  }
+
+  async function verifyHashtagTyped(keyword) {
+    const inserted = await waitForCaptionHashtag(keyword);
+    if (!inserted) {
+      throw new Error(`已输入 #${keyword}，但文案框里没有确认到该标签，需要人工检查`);
+    }
+    assertCaptionSafe(`输入 #${keyword} 后检查`, false);
+    log(`已直接输入并确认话题: #${keyword}`);
+    return true;
+  }
+
+  async function finalizeCaption() {
     const editable = getCaptionEditable();
     if (editable) editable.blur();
     await sleep(1200);
     const finalCaption = assertCaptionSafe('文案填写完成终检');
     log(`文案终检通过 ✅：${finalCaption}`);
+    return finalCaption;
   }
 
   // ===== 商品挂车 =====
@@ -722,7 +726,11 @@ export function installTkqInPage(config) {
     isUploadPage,
     isContentPage,
     waitForUploadComplete,
-    fillCaption,
+    clearCaption,
+    clickHashtagChipIfPresent,
+    focusCaptionEditorForTyping,
+    verifyHashtagTyped,
+    finalizeCaption,
     addProductLink,
     setAiDisclosure,
     setPublishNow,

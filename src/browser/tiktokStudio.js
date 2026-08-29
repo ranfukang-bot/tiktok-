@@ -29,6 +29,32 @@ function installAndBridgeLogs(page, log) {
   page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
 }
 
+// 文案/话题标签：历史标签面板里有的话直接点chip，没有的话改用Playwright真实键盘事件
+// (page.keyboard.type) 逐字符打进去，而不是在页面里用execCommand一次性批量插入整段文字。
+// 换这条路径是因为实测发现批量插入偶尔会让TikTok自己的话题识别逻辑把同一个词重复
+// 渲染出两份(比如"#fyp #fyp")——大概率是Draft.js的话题装饰器专门监听真实的逐字符
+// 输入事件，一次性塞进去一大段文字它处理不过来。真实键盘事件是唯一能从Node端直接
+// 触发的"逐字符输入"手段，所以这段没法留在页面内部的injected.js里，得由这里驱动。
+async function fillCaption(page, config, log) {
+  await page.evaluate(() => window.__tkq.clearCaption());
+
+  for (const keyword of config.hashtagKeywords) {
+    const clicked = await page.evaluate(([k]) => window.__tkq.clickHashtagChipIfPresent(k), [keyword]);
+    if (clicked) {
+      await humanDelay(400, 900);
+      continue;
+    }
+
+    log.info(`没找到历史话题 #${keyword} 的建议项（新账号很常见），改用真实键盘输入`);
+    await page.evaluate(() => window.__tkq.focusCaptionEditorForTyping());
+    await page.keyboard.type(`#${keyword} `, { delay: 70 + Math.random() * 60 });
+    await page.evaluate(([k]) => window.__tkq.verifyHashtagTyped(k), [keyword]);
+    await humanDelay(400, 900);
+  }
+
+  return page.evaluate(() => window.__tkq.finalizeCaption());
+}
+
 // 每次都强制刷新回全新的上传页，不信任"看起来已经在上传页"就直接复用——
 // 上一次如果失败在选完文件之后，页面会停在"编辑已选视频"的状态，
 // 这时候页面上根本没有 <input type=file>，复用旧状态会导致后续找不到上传框。
@@ -58,7 +84,7 @@ export async function runOneUploadCycle({ page, account, item, config, log, befo
   await page.evaluate(([filename]) => window.__tkq.waitForUploadComplete(filename), [item.filename]);
 
   await humanDelay();
-  await page.evaluate(() => window.__tkq.fillCaption());
+  await fillCaption(page, config, log);
 
   await humanDelay();
   await page.evaluate(([productId]) => window.__tkq.addProductLink(productId), [item.productId]);
