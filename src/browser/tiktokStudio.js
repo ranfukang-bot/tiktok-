@@ -29,26 +29,24 @@ function installAndBridgeLogs(page, log) {
   page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
 }
 
-// 文案/话题标签：历史标签面板里有的话直接点chip，没有的话改用Playwright真实键盘事件
-// (page.keyboard.type) 逐字符打进去，而不是在页面里用execCommand一次性批量插入整段文字。
-// 换这条路径是因为实测发现批量插入偶尔会让TikTok自己的话题识别逻辑把同一个词重复
-// 渲染出两份(比如"#fyp #fyp")——大概率是Draft.js的话题装饰器专门监听真实的逐字符
-// 输入事件，一次性塞进去一大段文字它处理不过来。真实键盘事件是唯一能从Node端直接
-// 触发的"逐字符输入"手段，所以这段没法留在页面内部的injected.js里，得由这里驱动。
+// 文案/话题标签：只走"点历史标签面板里的chip"这一条路径。
+//
+// 之前试过找不到chip时改用键盘/execCommand把文字直接打进去当兜底，撤回了：
+// 实测发现那样打出来的"#fyp"只是纯文本，不会被TikTok识别成真正的话题标签
+// （不会有被人搜到的效果），而且至少出过一次页面直接崩溃。用chip点出来的
+// 才是TikTok自己认的真话题，宁可要求"新账号先手动发一条建立历史记录"这个
+// 麻烦一次性的步骤，也不要每次都可能发出去一条文案里带无效"#标签"的内容。
 async function fillCaption(page, config, log) {
   await page.evaluate(() => window.__tkq.clearCaption());
 
   for (const keyword of config.hashtagKeywords) {
     const clicked = await page.evaluate(([k]) => window.__tkq.clickHashtagChipIfPresent(k), [keyword]);
-    if (clicked) {
-      await humanDelay(400, 900);
-      continue;
+    if (!clicked) {
+      throw new Error(
+        `没找到历史话题 #${keyword} 的建议项。这个账号大概率还没用过这个标签，需要你先在这个账号的` +
+          `TikTok Studio里手动发一条带上 #${keyword} 的作品，TikTok记住这个历史标签之后，自动发布才点得到它`
+      );
     }
-
-    log.info(`没找到历史话题 #${keyword} 的建议项（新账号很常见），改用真实键盘输入`);
-    await page.evaluate(() => window.__tkq.focusCaptionEditorForTyping());
-    await page.keyboard.type(`#${keyword} `, { delay: 70 + Math.random() * 60 });
-    await page.evaluate(([k]) => window.__tkq.verifyHashtagTyped(k), [keyword]);
     await humanDelay(400, 900);
   }
 

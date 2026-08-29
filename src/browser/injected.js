@@ -196,16 +196,6 @@ export function installTkqInPage(config) {
     selection.addRange(range);
   }
 
-  function moveCaretToEnd(editable) {
-    const selection = window.getSelection();
-    if (!selection) throw new Error('浏览器无法取得文案框选区');
-    const range = document.createRange();
-    range.selectNodeContents(editable);
-    range.collapse(false);
-    selection.removeAllRanges();
-    selection.addRange(range);
-  }
-
   async function waitForCaptionEmpty(timeout = 1500) {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
@@ -357,17 +347,17 @@ export function installTkqInPage(config) {
     log(`视频和默认标题均已就绪 ✅（待清空：${stableText.slice(0, 80)}）`);
   }
 
-  // ===== 文案/话题标签：拆成小步骤，方便Node端在"直接输入"这条路径上改用
-  // Playwright真实键盘事件(page.keyboard.type)而不是这里的execCommand批量插入。
-  // 原因见 clickHashtagChipIfPresent 下面那条注释：实测发现批量插入偶尔会导致
-  // TikTok自己的话题识别逻辑把同一个词渲染出两份（比如"#fyp #fyp"）。
+  // ===== 文案/话题标签：只走"点历史标签面板里的chip"这一条路径。=====
+  // 曾经加过"找不到chip就用键盘/execCommand直接打字"的兜底，撤回了：那样打出来的
+  // "#fyp"只是纯文本，不会被TikTok识别成真正的话题标签，而且实测出过页面崩溃。
+  // 找不到chip就直接报错暂停，交给人去给这个账号先手动发一条建立历史记录。
 
   async function clearCaption() {
     await clearCaptionSafely();
   }
 
-  // 尝试点击"历史标签"建议面板里已有的chip；返回是否成功。找不到chip时返回false，
-  // 由Node端改用真实键盘输入这条路径，这里不再自己做execCommand批量插入。
+  // 尝试点击"历史标签"建议面板里已有的chip；返回是否成功，找不到chip时返回false
+  // （调用方 tiktokStudio.js 里的 fillCaption 会据此直接报错暂停，不会自己瞎打字）。
   async function clickHashtagChipIfPresent(keyword) {
     const editable = await waitFor(getCaptionEditable);
     editable.focus();
@@ -386,26 +376,6 @@ export function installTkqInPage(config) {
     }
     assertCaptionSafe(`添加 #${keyword} 后检查`, false);
     log(`已添加并确认历史话题: #${keyword}`);
-    return true;
-  }
-
-  // 找不到历史标签chip时，Node端会先调用这个把光标定位好，再用
-  // page.keyboard.type() 逐字符真实输入（不是这里批量execCommand插入）。
-  async function focusCaptionEditorForTyping() {
-    const editable = await waitFor(getCaptionEditable);
-    editable.focus();
-    moveCaretToEnd(editable);
-    await sleep(150);
-    return true;
-  }
-
-  async function verifyHashtagTyped(keyword) {
-    const inserted = await waitForCaptionHashtag(keyword);
-    if (!inserted) {
-      throw new Error(`已输入 #${keyword}，但文案框里没有确认到该标签，需要人工检查`);
-    }
-    assertCaptionSafe(`输入 #${keyword} 后检查`, false);
-    log(`已直接输入并确认话题: #${keyword}`);
     return true;
   }
 
@@ -747,8 +717,6 @@ export function installTkqInPage(config) {
     waitForUploadComplete,
     clearCaption,
     clickHashtagChipIfPresent,
-    focusCaptionEditorForTyping,
-    verifyHashtagTyped,
     finalizeCaption,
     addProductLink,
     setAiDisclosure,

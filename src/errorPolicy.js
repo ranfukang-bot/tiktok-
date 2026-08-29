@@ -32,6 +32,9 @@ const CONTENT_PATTERNS = [
   /商品.*没有真正选中/,
 ];
 
+// 账号还没攒够历史话题标签：只能靠人先手动发一条建立记录，重试没用
+const MISSING_HISTORY_TAG_PATTERNS = [/没找到历史话题.*的建议项/];
+
 // 明确认定为"临时抽风"的信号；除此之外没匹配上的未知错误也按临时处理
 // （因为发布前的所有步骤每轮都是从全新上传页重跑的，重试本身是安全的）。
 const TRANSIENT_PATTERNS = [
@@ -88,6 +91,10 @@ export function classifyError(err, context = {}) {
 
   if (matchesAny(CONFIG_PATTERNS, message)) {
     return { kind: 'config', code: 'config_error', reason: brief };
+  }
+
+  if (matchesAny(MISSING_HISTORY_TAG_PATTERNS, message)) {
+    return { kind: 'never_retry', code: 'missing_history_tag', reason: brief };
   }
 
   if (matchesAny(CONTENT_PATTERNS, message)) {

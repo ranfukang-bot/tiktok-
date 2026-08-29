@@ -213,10 +213,14 @@ async function handleAccountError(account, settings, err, log) {
   const limit = maxRetries(backoff);
 
   if (verdict.kind !== 'transient') {
-    const howToFix =
-      verdict.kind === 'config'
-        ? '这属于配置问题，重试也没用。在控制台网页上点这个账号的"编辑"核对一下环境ID/视频文件夹/界面语言，或者检查指纹浏览器客户端是不是开着'
-        : '这一条需要你人工看一眼再决定怎么处理，处理完在控制台网页上点"继续"';
+    let howToFix;
+    if (verdict.code === 'missing_history_tag') {
+      howToFix = '这个账号自己打开TikTok Studio手动发一条带上这个话题标签的作品，TikTok记住之后再点控制台网页上的"继续"';
+    } else if (verdict.kind === 'config') {
+      howToFix = '这属于配置问题，重试也没用。在控制台网页上点这个账号的"编辑"核对一下环境ID/视频文件夹/界面语言，或者检查指纹浏览器客户端是不是开着';
+    } else {
+      howToFix = '这一条需要你人工看一眼再决定怎么处理，处理完在控制台网页上点"继续"';
+    }
     await pauseAndNotify(account, settings, { reason: verdict.reason, code: verdict.code, howToFix, log });
     return;
   }
