@@ -27,10 +27,12 @@
   },
 
   "hubstudio": {
-    "_说明": "Hubstudio 的本地API字段以你客户端里『开发者/接口文档』页面显示的为准；下面这些是通用默认值，第一次跑之前请对照客户端里的文档确认端点路径和返回字段名，见 README『Hubstudio 适配器需要你确认』一节。",
+    "_说明": "已对照官方文档确认：POST /api/v1/browser/start (打开) 和 /api/v1/browser/stop (关闭)，环境ID字段是containerCode，调试端口在返回值的data.debuggingPort。如果客户端「开发者」页面里的『安全校验』是开启状态，把生成的API Key填到下面的apiKey；关闭状态则不用填。",
     "baseUrl": "http://127.0.0.1:6873",
-    "appId": "",
-    "appSecret": "",
-    "groupCode": ""
+    "apiKey": "",
+    "openPath": "/api/v1/browser/start",
+    "closePath": "/api/v1/browser/stop",
+    "requestIdField": "containerCode",
+    "responseDebugPortField": "debuggingPort"
   }
 }

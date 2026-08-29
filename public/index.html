@@ -74,12 +74,12 @@
               <input type="text" id="s-hub-baseurl">
             </div>
             <div class="field">
-              <label>团队 groupCode（账号里没单独填时用这个）</label>
-              <input type="text" id="s-hub-groupcode">
+              <label>API Key（客户端「开发者」页面里"安全校验"开启时才需要）</label>
+              <input type="text" id="s-hub-apikey">
             </div>
           </div>
           <details style="margin-top:8px;">
-            <summary class="muted">高级：接口路径/字段名对不上时在这里改（见README说明）</summary>
+            <summary class="muted">高级：接口路径/字段名（默认值已按官方文档确认，一般不用改）</summary>
             <div class="form-grid" style="margin-top:10px;">
               <div class="field">
                 <label>打开环境接口路径</label>
@@ -135,10 +135,6 @@
         <div class="field">
           <label id="a-profileid-label">环境ID</label>
           <input type="text" id="a-profileid" required>
-        </div>
-        <div class="field" id="a-groupcode-field" style="display:none;">
-          <label>团队 groupCode（可选，不填用全局设置里的）</label>
-          <input type="text" id="a-groupcode">
         </div>
         <div class="field span2">
           <label>视频文件夹（文件名就是商品ID，比如 123456.mp4）</label>

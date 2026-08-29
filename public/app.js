@@ -173,7 +173,6 @@ function openAccountModal(idx) {
   document.getElementById('a-name').value = account.name || '';
   document.getElementById('a-browser').value = account.browser || 'adspower';
   document.getElementById('a-profileid').value = account.browser === 'hubstudio' ? account.containerCode || '' : account.profileId || '';
-  document.getElementById('a-groupcode').value = account.groupCode || '';
   document.getElementById('a-folder').value = account.videoFolder || '';
   document.getElementById('a-hashtags').value = (account.hashtagKeywords || ['fyp', 'tiktok', 'tiktokshop']).join(',');
 
@@ -201,7 +200,6 @@ function closeAccountModal() {
 function updateBrowserFields() {
   const browser = document.getElementById('a-browser').value;
   document.getElementById('a-profileid-label').textContent = browser === 'hubstudio' ? '环境ID（containerCode）' : '环境ID（AdsPower环境列表里的ID）';
-  document.getElementById('a-groupcode-field').style.display = browser === 'hubstudio' ? 'flex' : 'none';
 }
 
 function updateLocaleFields() {
@@ -278,8 +276,6 @@ accountForm.addEventListener('submit', async (e) => {
     account.profileId = document.getElementById('a-profileid').value.trim();
   } else {
     account.containerCode = document.getElementById('a-profileid').value.trim();
-    const groupCode = document.getElementById('a-groupcode').value.trim();
-    if (groupCode) account.groupCode = groupCode;
   }
 
   // 保留原有账号的启用状态等未在表单里出现的字段
@@ -325,9 +321,9 @@ function fillSettingsForm(settings) {
 
   const hub = settings.hubstudio || {};
   document.getElementById('s-hub-baseurl').value = hub.baseUrl || '';
-  document.getElementById('s-hub-groupcode').value = hub.groupCode || '';
-  document.getElementById('s-hub-openpath').value = hub.openPath || '/api/v1/browser/open';
-  document.getElementById('s-hub-closepath').value = hub.closePath || '/api/v1/browser/close';
+  document.getElementById('s-hub-apikey').value = hub.apiKey || '';
+  document.getElementById('s-hub-openpath').value = hub.openPath || '/api/v1/browser/start';
+  document.getElementById('s-hub-closepath').value = hub.closePath || '/api/v1/browser/stop';
   document.getElementById('s-hub-idfield').value = hub.requestIdField || 'containerCode';
   document.getElementById('s-hub-portfield').value = hub.responseDebugPortField || 'debuggingPort';
 }
@@ -346,7 +342,7 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
   settings.hubstudio = {
     ...(currentSettings.hubstudio || {}),
     baseUrl: document.getElementById('s-hub-baseurl').value.trim(),
-    groupCode: document.getElementById('s-hub-groupcode').value.trim(),
+    apiKey: document.getElementById('s-hub-apikey').value.trim(),
     openPath: document.getElementById('s-hub-openpath').value.trim(),
     closePath: document.getElementById('s-hub-closepath').value.trim(),
     requestIdField: document.getElementById('s-hub-idfield').value.trim(),
