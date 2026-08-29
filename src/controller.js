@@ -1,8 +1,9 @@
-import { loadSettings, loadAccounts, loadAllAccounts } from './config.js';
+import { loadSettings, loadAccounts, loadAllAccounts, resolveDailyLimit, resolveTimezone } from './config.js';
 import { tickAll, isAccountProcessing, syncAccountFolder } from './orchestrator.js';
 import { getState, setState } from './stateStore.js';
 import { createLogger } from './logger.js';
 import { deletePublishedFile } from './folderScanner.js';
+import { currentDayKey } from './dailyQuota.js';
 
 let running = false;
 let loopPromise = null;
@@ -51,6 +52,11 @@ export function getStatus() {
     const settings = loadSettings();
     accounts = loadAccounts().map((account) => {
       const state = getState(account.name);
+      const timezone = resolveTimezone(settings, account);
+      const dailyLimit = resolveDailyLimit(settings, account);
+      // 这里只算展示用的数字，不落盘：真正的跨天重置由调度循环下一轮tick做，
+      // GET接口不该有副作用。跨天了就当作今天还没发过来显示，不用等下一轮tick。
+      const publishedToday = state.publishDayKey === currentDayKey(timezone) ? state.publishedToday || 0 : 0;
       return {
         name: account.name,
         browser: account.browser,
@@ -66,6 +72,9 @@ export function getStatus() {
         consecutiveFailures: state.consecutiveFailures || 0,
         retryAt: state.retryAt,
         lastError: state.lastError,
+        publishedToday,
+        dailyLimit: Number.isFinite(dailyLimit) ? dailyLimit : null,
+        quotaExhausted: Number.isFinite(dailyLimit) && publishedToday >= dailyLimit,
       };
     });
     void settings;

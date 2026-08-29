@@ -50,11 +50,24 @@
             <label>文件夹检查间隔（秒）</label>
             <input type="number" min="5" step="5" id="s-scan-seconds" required>
           </div>
+          <div class="field">
+            <label>每个账号每天最多发几条（0=不限）</label>
+            <input type="number" min="0" step="1" id="s-daily-limit">
+            <div class="hint">按下面的时区算"一天"，发够这个数就停，等第二天0点自动刷新额度。</div>
+          </div>
+          <div class="field">
+            <label>时区（算"一天"的边界、算日切换点用）</label>
+            <select id="s-timezone">
+              <option value="Asia/Jakarta">印尼西部 WIB（雅加达，最常用）</option>
+              <option value="Asia/Makassar">印尼中部 WITA</option>
+              <option value="Asia/Jayapura">印尼东部 WIT</option>
+            </select>
+          </div>
           <div class="field span2">
-            <label><input type="checkbox" id="s-delete-after-publish"> 确认发布成功后，自动删除源视频文件</label>
+            <label><input type="checkbox" id="s-delete-after-publish"> 确认发布成功后，把源视频文件移到回收站</label>
             <div class="hint">
               开着的话，文件夹本身就是"待发布清单"：里面还有视频=没发完，空了就该加新的，不用再对照进度列表。
-              只在真正确认发布成功那一刻才删（不确定/失败/暂停都不会删）——但这是真删，不会进回收站。
+              只在真正确认发布成功那一刻才移（不确定/失败/暂停都不会动）——是移到回收站，不是永久删除，误删还能捞回来。
             </div>
           </div>
         </div>

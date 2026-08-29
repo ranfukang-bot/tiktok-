@@ -1,5 +1,6 @@
-import { readdir, stat, unlink } from 'node:fs/promises';
+import { readdir, stat, access } from 'node:fs/promises';
 import path from 'node:path';
+import { moveToTrash } from './trash.js';
 
 // 与原油猴脚本保持一致的规则：文件名(去扩展名、去" (1)"这类重名后缀)就是商品ID。
 export function productIdFromFilename(name) {
@@ -42,18 +43,23 @@ export function resolveItemPath(videoFolder, item) {
   return path.join(videoFolder, item.relativePath.split('/').join(path.sep));
 }
 
-// 确认发布成功后删掉源文件，让文件夹本身就是"待发布清单"：夹子里还有视频就是没发完，
-// 没了就该加新的。删除失败(文件被占用/已经手动删了/权限问题)只当警告处理，不能因为
-// 删文件这种收尾动作失败就把整条发布流程搞挂——发布本身已经成功了。
+// 确认发布成功后把源文件送进回收站，让文件夹本身就是"待发布清单"：夹子里还有视频
+// 就是没发完，没了就该加新的。用回收站而不是永久删除，误删还能捞回来。
+// 删除失败(文件被占用/权限问题/当前系统不支持回收站)只当警告处理，不能因为这个
+// 收尾动作失败就把整条发布流程搞挂——发布本身已经成功了。
 export async function deletePublishedFile(videoFolder, item, log) {
   const absolutePath = resolveItemPath(videoFolder, item);
   try {
-    await unlink(absolutePath);
-    if (log) log.info(`已删除发布成功的视频文件: ${item.relativePath}`);
+    await access(absolutePath);
+  } catch {
+    return true; // 已经不在了(比如手动删过)，等于达到目的
+  }
+  try {
+    await moveToTrash(absolutePath);
+    if (log) log.info(`已把发布成功的视频文件移到回收站: ${item.relativePath}`);
     return true;
   } catch (err) {
-    if (err.code === 'ENOENT') return true; // 已经不在了，等于达到目的
-    if (log) log.warn(`发布成功了，但删除源文件失败(不影响发布结果): ${item.relativePath} - ${err.message}`);
+    if (log) log.warn(`发布成功了，但移到回收站失败(不影响发布结果，文件还留在原地): ${item.relativePath} - ${err.message}`);
     return false;
   }
 }

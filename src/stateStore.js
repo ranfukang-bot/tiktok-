@@ -30,6 +30,10 @@ function defaultState() {
     lastError: '',
     // 这次暂停是否已经推送过通知，避免每轮循环重复轰炸
     notifiedForPause: false,
+    // 每日发布额度：publishDayKey 是按配置时区算出来的"今天"(YYYY-MM-DD)，
+    // 跟当前算出来的日期对不上就说明跨天了，publishedToday 会被清零重新计数。
+    publishDayKey: '',
+    publishedToday: 0,
     updatedAt: Date.now(),
   };
 }

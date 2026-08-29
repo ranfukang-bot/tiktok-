@@ -1,5 +1,5 @@
 import { chromium } from 'playwright-core';
-import { loadSettings, loadAccounts, resolveText, resolveHashtags } from './config.js';
+import { loadSettings, loadAccounts, resolveText, resolveHashtags, resolveDailyLimit, resolveTimezone } from './config.js';
 import { createAdapter } from './browserAdapters/index.js';
 import { createLogger } from './logger.js';
 import { getState, setState, pause, clearFailures } from './stateStore.js';
@@ -7,6 +7,7 @@ import { scanDirectory, syncFilesIntoQueue, deletePublishedFile } from './folder
 import { runOneUploadCycle } from './browser/tiktokStudio.js';
 import { classifyError, retryDelayMs, maxRetries } from './errorPolicy.js';
 import { notify } from './notifier.js';
+import { rolloverIfNewDay, hasQuotaRemaining } from './dailyQuota.js';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -133,9 +134,18 @@ async function processAccountOnce(account, settings, adapter, log) {
       latest.pendingIndex = null;
       latest.pendingSince = null;
       latest.nextTime = Date.now() + randomInterval(settings.minIntervalMs, settings.maxIntervalMs);
+      // 极小概率跨天卡在这几十秒里，保险起见在计数前再判一次
+      rolloverIfNewDay(latest, resolveTimezone(settings, account));
+      latest.publishedToday = (latest.publishedToday || 0) + 1;
       setState(account.name, latest);
-      log.info(`本条发布完成，下一条将在约 ${fmtMinutes(latest.nextTime - Date.now())} 分钟后开始`);
       clearFailures(account.name);
+
+      const dailyLimit = resolveDailyLimit(settings, account);
+      if (!hasQuotaRemaining(latest, dailyLimit)) {
+        log.info(`本条发布完成，今天已经发了 ${latest.publishedToday}/${dailyLimit} 条，额度用完，等印尼时间明天再继续`);
+      } else {
+        log.info(`本条发布完成，下一条将在约 ${fmtMinutes(latest.nextTime - Date.now())} 分钟后开始`);
+      }
       if (settings.deleteAfterPublish !== false) {
         await deletePublishedFile(account.videoFolder, item, log);
       }
@@ -162,6 +172,15 @@ async function tickAccount(settings, account, adapters) {
     if (state.paused) return;
     // 上一轮失败后正在等待重试，时间没到就先不动
     if (Number.isFinite(state.retryAt) && Date.now() < state.retryAt) return;
+
+    const timezone = resolveTimezone(settings, account);
+    const dailyLimit = resolveDailyLimit(settings, account);
+    if (rolloverIfNewDay(state, timezone)) {
+      setState(account.name, state);
+      log.info(`印尼时间进入新的一天，今日发布额度已刷新`);
+    }
+    // 今天的额度用完了，安安静静跳过，不算错误也不用暂停/通知——等印尼时间明天自动恢复
+    if (!hasQuotaRemaining(state, dailyLimit)) return;
 
     if (!Number.isInteger(state.pendingIndex)) {
       await syncAccountFolder(account, settings, log);

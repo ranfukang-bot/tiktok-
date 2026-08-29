@@ -76,6 +76,8 @@ function renderAccounts() {
       stateHtml = `<span class="state paused">已暂停</span>`;
     } else if (runtime.retryAt && runtime.retryAt > Date.now()) {
       stateHtml = `<span class="state processing">出错重试中，${fmtRemaining(runtime.retryAt - Date.now())}</span>`;
+    } else if (runtime.quotaExhausted) {
+      stateHtml = `<span class="state paused">今日额度用完(${runtime.publishedToday}/${runtime.dailyLimit})，等印尼时间明天</span>`;
     } else if (runtime.total === 0) {
       stateHtml = `<span class="state paused">还没检测到视频，点"立即扫描"看看</span>`;
     } else if (runtime.remaining === 0) {
@@ -85,6 +87,10 @@ function renderAccounts() {
     }
 
     const progress = runtime ? `${runtime.doneIndex + 1 < 0 ? 0 : runtime.doneIndex + 1}/${runtime.total}` : '-';
+    const quotaBadge =
+      runtime && runtime.dailyLimit
+        ? `<span class="tag" title="今日已发/每日上限">今日 ${runtime.publishedToday}/${runtime.dailyLimit}</span>`
+        : '';
 
     const actions = [];
     if (enabled && runtime && runtime.paused && runtime.pauseCode === 'uncertain_publish') {
@@ -105,6 +111,7 @@ function renderAccounts() {
       <span class="tag">${{ adspower: 'AdsPower', hubstudio: 'Hubstudio', bitbrowser: 'BitBrowser' }[account.browser] || account.browser}</span>
       <span class="folder" title="${escapeAttr(account.videoFolder)}">${escapeHtml(account.videoFolder)}</span>
       <span class="progress">${progress}</span>
+      ${quotaBadge}
       ${stateHtml}
       <span class="spacer"></span>
       <span class="actions">${actions.join('')}</span>
@@ -387,6 +394,8 @@ function fillSettingsForm(settings) {
   document.getElementById('s-concurrency').value = settings.concurrency || 1;
   document.getElementById('s-scan-seconds').value = Math.round((settings.folderScanIntervalMs || 30000) / 1000);
   document.getElementById('s-delete-after-publish').checked = settings.deleteAfterPublish !== false;
+  document.getElementById('s-daily-limit').value = settings.dailyPublishLimit ?? 0;
+  document.getElementById('s-timezone').value = settings.timezone || 'Asia/Jakarta';
 
   const notif = settings.notifications || {};
   document.getElementById('s-notify-enabled').checked = Boolean(notif.enabled);
@@ -422,6 +431,8 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
   settings.concurrency = Number(document.getElementById('s-concurrency').value);
   settings.folderScanIntervalMs = Number(document.getElementById('s-scan-seconds').value) * 1000;
   settings.deleteAfterPublish = document.getElementById('s-delete-after-publish').checked;
+  settings.dailyPublishLimit = Number(document.getElementById('s-daily-limit').value) || 0;
+  settings.timezone = document.getElementById('s-timezone').value;
   settings.notifications = {
     ...(currentSettings.notifications || {}),
     enabled: document.getElementById('s-notify-enabled').checked,
