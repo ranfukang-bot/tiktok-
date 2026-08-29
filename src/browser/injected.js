@@ -265,6 +265,12 @@ export function installTkqInPage(config) {
     return new RegExp(`(?:^|[^a-z0-9_])#\\s*${escaped}(?=$|[^a-z0-9_])`, 'i').test(text);
   }
 
+  function captionHashtagCount(text, keyword) {
+    const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const matches = text.match(new RegExp(`(?:^|[^a-z0-9_])#\\s*${escaped}(?=$|[^a-z0-9_])`, 'gi'));
+    return matches ? matches.length : 0;
+  }
+
   function captionUnexpectedRemainder(text) {
     let remainder = text;
     for (const keyword of config.hashtagKeywords) {
@@ -288,6 +294,12 @@ export function installTkqInPage(config) {
       const missing = config.hashtagKeywords.filter((k) => !captionContainsHashtag(text, k));
       if (missing.length) {
         throw new Error(`${stage}：缺少话题标签 ${missing.map((k) => '#' + k).join(' ')}，已停止以避免误发布`);
+      }
+      // 話題标签点击建议项/直接输入这两条路径都可能因为面板刷新时机问题被重复触发，
+      // 重复标签发出去不算"误发布"但很像机器人行为，一律拦下来让人看一眼，不悄悄放过。
+      const duplicated = config.hashtagKeywords.filter((k) => captionHashtagCount(text, k) > 1);
+      if (duplicated.length) {
+        throw new Error(`${stage}：话题标签 ${duplicated.map((k) => '#' + k).join(' ')} 重复出现了，可能是插入过程中被重复触发，已停止以避免发出带重复标签的内容`);
       }
     }
     return text;
@@ -545,20 +557,48 @@ export function installTkqInPage(config) {
       }
     }
 
-    const toggleThumb = await waitFor(() => {
+    // 实际抓到的DOM结构里，role="switch"的是那个隐藏的<input>，跟可见的thumb是
+    // 兄弟节点（都在同一个 Switch__content 容器下），不是thumb的祖先节点，
+    // 用 thumb.closest('[role="switch"]') 永远找不到，只会退化到点thumb的父级容器，
+    // 而那个容器不一定绑了真正的点击事件——这就是之前"点了但没生效"的原因。
+    const found = await waitFor(() => {
       const currentLabel = findAiLabel();
       if (!currentLabel) return null;
       const row = currentLabel.closest('div');
-      return row ? row.querySelector('[data-part="thumb"]') : null;
+      if (!row) return null;
+      const checkbox = row.querySelector('input[role="switch"], input[type="checkbox"]');
+      const wrapper = checkbox ? checkbox.closest('[data-state]') : null;
+      const thumb = row.querySelector('[data-part="thumb"]');
+      return checkbox || thumb ? { checkbox, wrapper, thumb } : null;
     }, 10000);
 
-    if (toggleThumb.getAttribute('data-state') === 'checked') {
+    const isChecked = () => {
+      if (found.checkbox) return found.checkbox.checked || found.checkbox.getAttribute('aria-checked') === 'true';
+      if (found.wrapper) return found.wrapper.getAttribute('data-state') === 'checked' || found.wrapper.getAttribute('aria-checked') === 'true';
+      return found.thumb && found.thumb.getAttribute('data-state') === 'checked';
+    };
+
+    if (isChecked()) {
       log('AI声明开关已经是打开状态，跳过');
-    } else {
-      const clickTarget = toggleThumb.closest('[role="switch"]') || toggleThumb.closest('button') || toggleThumb.parentElement;
-      fireClick(clickTarget);
-      log('AI声明开关已打开');
+      return;
     }
+
+    // 优先直接点隐藏的checkbox本体（真正承载开关状态和事件的元素），
+    // 不行再退一步点它外层带 data-state 的可视容器。
+    const primaryTarget = found.checkbox || found.wrapper || found.thumb.parentElement;
+    fireClick(primaryTarget);
+    let toggled = await waitForOrNull(() => isChecked() || null, 2500, 100);
+
+    if (!toggled && found.checkbox && found.wrapper && primaryTarget !== found.wrapper) {
+      log('直接点击开关本体未生效，尝试点击外层容器');
+      fireClick(found.wrapper);
+      toggled = await waitForOrNull(() => isChecked() || null, 2500, 100);
+    }
+
+    if (!toggled) {
+      throw new Error('AI声明开关点击后没有变成打开状态，已停止后续发布，需要人工检查页面结构（开关的DOM结构可能又变了）');
+    }
+    log('AI声明开关已打开');
   }
 
   function getPostButton() {
@@ -571,25 +611,30 @@ export function installTkqInPage(config) {
 
   async function waitForChecksPassAndAssertSafe() {
     assertProductPickerClosed('点击Posting');
-    log('等待"Pemeriksaan"版权/内容检测完成或发布按钮就绪…');
+    log('等待"Pemeriksaan"版权/内容检测完成…');
     const start = Date.now();
-    const maxWaitMs = 30000;
+    const maxWaitMs = 45000;
+    let explicitPassed = false;
     while (Date.now() - start < maxWaitMs) {
       checkForAppCrash();
       const text = document.body.innerText || '';
       if (text.includes('Masalah hak cipta ditemukan') || text.includes('Pelanggaran terdeteksi') || text.includes('Video tidak dapat diposting')) {
         throw new Error('检测到版权或内容严重违规，已自动暂停');
       }
-      const explicitPassed =
+      explicitPassed =
         text.includes('Tidak ada masalah yang ditemukan') || text.includes('Tidak ditemukan masalah') || text.includes('Pemeriksaan selesai');
-      const postBtn = getPostButton();
-      const isPostReady = postBtn && isEnabled(postBtn);
-      const isChecking = /Sedang memeriksa|Memeriksa hak cipta|Checking|Sedang memverifikasi/i.test(text);
-      if (explicitPassed || (isPostReady && !isChecking)) {
-        log('检测通过或发布按钮已就绪 ✅');
+      if (explicitPassed) {
+        log('检测到明确的"检查通过"提示 ✅');
         break;
       }
       await sleep(1000);
+    }
+    if (!explicitPassed) {
+      // 实测发现"发布按钮是否可点"这个信号不可靠：有些账号上按钮全程都是可点状态，
+      // TikTok不是靠禁用按钮拦截过早提交，而是点了之后弹一个"检查还没做完，要不要
+      // 硬提交"的确认框。所以这里不再用"按钮亮了"当作检查已完成的证据，没等到明确
+      // 的"检查通过"文案就只能老实等满时间；点击后 clickPublishButton 还会再确认一次。
+      log('⚠️ 没等到明确的"检查通过"提示，已等满最长时间，仍会继续，但点击后会再核实一次');
     }
     assertCaptionSafe('内容检测完成后的文案终检');
     log('等待Posting按钮变亮…');
@@ -602,12 +647,24 @@ export function installTkqInPage(config) {
     return Boolean(submitBtn);
   }
 
-  function clickPublishButton() {
+  async function clickPublishButton() {
     assertProductPickerClosed('点击Posting');
     const btn = getPostButton();
     if (!btn || !isEnabled(btn)) throw new Error('发布按钮不存在或不可用，取消点击');
+    const modalsBefore = getVisibleModalRoots().length;
     fireClick(btn);
-    return true;
+
+    // 点完之后看一眼是不是弹出了"检查还没做完，确定要提交吗"这类确认框——
+    // 目前只能靠"新出现了一个包含Pemeriksaan字样的弹窗"这个不太精确的信号猜，
+    // 没有更准确的选择器可用。猜中了就直接按"发布结果不确定"处理，绝不会替用户
+    // 点这个确认框（不管它默认是"确认"还是"取消"），一律交给人工核实。
+    await sleep(1500);
+    const text = document.body.innerText || '';
+    const prematureCheck = /Pemeriksaan/i.test(text) && getVisibleModalRoots().length > modalsBefore;
+    if (prematureCheck) {
+      log('⚠️ 点击发布后检测到疑似"检查未完成"的确认框，按发布结果不确定处理');
+    }
+    return { clicked: true, prematureCheck };
   }
 
   // ===== 返回上传页 =====

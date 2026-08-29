@@ -8,6 +8,13 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// 原油猴脚本每个大步骤之间都有这种随机停顿，避免所有操作像机器一样毫无间隔地连续
+// 发生。移植成 Playwright 版本时这些停顿被漏掉了，导致整套流程点得飞快——这个函数
+// 补回来，在 Node 端各步骤之间调用。
+function humanDelay(minMs = 800, maxMs = 2200) {
+  return sleep(minMs + Math.random() * (maxMs - minMs));
+}
+
 // 同一个账号的浏览器页面会跨多次发布周期反复复用，这个函数每个周期都会被调用一次；
 // 用标记位保证监听器只挂一次，不然日志会一轮比一轮重复得更多次。
 function installAndBridgeLogs(page, log) {
@@ -47,11 +54,22 @@ export async function runOneUploadCycle({ page, account, item, config, log, befo
   await fileInput.waitFor({ state: 'attached', timeout: 30000 });
   await fileInput.setInputFiles(absolutePath);
 
+  await humanDelay(1500, 3000);
   await page.evaluate(([filename]) => window.__tkq.waitForUploadComplete(filename), [item.filename]);
+
+  await humanDelay();
   await page.evaluate(() => window.__tkq.fillCaption());
+
+  await humanDelay();
   await page.evaluate(([productId]) => window.__tkq.addProductLink(productId), [item.productId]);
+
+  await humanDelay();
   await page.evaluate(() => window.__tkq.setAiDisclosure());
+
+  await humanDelay();
   await page.evaluate(() => window.__tkq.setPublishNow());
+
+  await humanDelay();
   await page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe());
 
   // 点击发布前先让调用方把 pendingIndex 落盘：点击后页面可能立刻跳转，
@@ -59,8 +77,13 @@ export async function runOneUploadCycle({ page, account, item, config, log, befo
   // 不依赖页面上下文存活。
   if (beforePublishClick) await beforePublishClick();
 
+  await humanDelay();
   log.info('点击最终发布按钮…');
-  await page.evaluate(() => window.__tkq.clickPublishButton());
+  const clickResult = await page.evaluate(() => window.__tkq.clickPublishButton());
+  if (clickResult && clickResult.prematureCheck) {
+    log.warn('检测到疑似"版权检查未完成"的确认框，不再等待跳转，按发布结果不确定处理');
+    return { published: false, uncertain: true };
+  }
 
   try {
     await page.waitForURL(/\/tiktokstudio\/content/, { timeout: PUBLISH_CONFIRM_TIMEOUT_MS });
