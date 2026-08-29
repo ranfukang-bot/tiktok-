@@ -53,6 +53,17 @@
         </div>
 
         <fieldset>
+          <legend>比特浏览器 BitBrowser 连接设置</legend>
+          <div class="form-grid">
+            <div class="field">
+              <label>本地API地址</label>
+              <input type="text" id="s-bit-baseurl">
+              <div class="hint">在比特浏览器客户端"系统设置"里能看到，默认一般是 http://127.0.0.1:54345。</div>
+            </div>
+          </div>
+        </fieldset>
+
+        <fieldset>
           <legend>AdsPower 连接设置</legend>
           <div class="form-grid">
             <div class="field">
@@ -128,13 +139,20 @@
         <div class="field">
           <label>用哪个指纹浏览器</label>
           <select id="a-browser">
+            <option value="bitbrowser">比特浏览器 BitBrowser</option>
             <option value="adspower">AdsPower</option>
             <option value="hubstudio">Hubstudio</option>
           </select>
         </div>
         <div class="field">
           <label id="a-profileid-label">环境ID</label>
-          <input type="text" id="a-profileid" required>
+          <div class="row">
+            <input type="text" id="a-profileid" required>
+            <select id="a-bitbrowser-picker" style="display:none;max-width:160px;">
+              <option value="">从列表选择…</option>
+            </select>
+          </div>
+          <div class="hint" id="a-bitbrowser-hint" style="display:none;">选一下会自动把ID填到左边的框里，读取失败的话手动去比特浏览器"浏览器窗口"列表里核对ID。</div>
         </div>
         <div class="field span2">
           <label>视频文件夹（文件名就是商品ID，比如 123456.mp4）</label>

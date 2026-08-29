@@ -2,7 +2,7 @@
   "name": "tiktok-studio-auto-publish",
   "version": "1.0.0",
   "private": true,
-  "description": "TikTok Studio 批量发布控制台：本地网页界面 + Playwright/CDP 驱动指纹浏览器(AdsPower/Hubstudio)，替代原来分散在每个指纹浏览器里的油猴脚本。",
+  "description": "TikTok Studio 批量发布控制台：本地网页界面 + Playwright/CDP 驱动指纹浏览器(比特浏览器/AdsPower/Hubstudio)，替代原来分散在每个指纹浏览器里的油猴脚本。",
   "type": "module",
   "scripts": {
     "start": "node src/server.js",

@@ -34,5 +34,10 @@
     "closePath": "/api/v1/browser/stop",
     "requestIdField": "containerCode",
     "responseDebugPortField": "debuggingPort"
+  },
+
+  "bitbrowser": {
+    "_说明": "免费版就能用。本地API地址在比特浏览器客户端「系统设置」里能查到，默认一般是 http://127.0.0.1:54345，如果连不上先去客户端核对这个端口。",
+    "baseUrl": "http://127.0.0.1:54345"
   }
 }

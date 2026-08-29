@@ -12,6 +12,7 @@ import {
 } from './config.js';
 import * as controller from './controller.js';
 import { recentLogs, subscribe } from './logBus.js';
+import { createAdapter } from './browserAdapters/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8765;
@@ -90,6 +91,7 @@ app.put('/api/accounts', (req, res) => {
       if (!account.videoFolder || !account.videoFolder.trim()) throw new Error(`账号 "${account.name}" 没有填视频文件夹路径`);
       if (account.browser === 'adspower' && !account.profileId) throw new Error(`账号 "${account.name}" 是AdsPower但没填环境ID`);
       if (account.browser === 'hubstudio' && !account.containerCode) throw new Error(`账号 "${account.name}" 是Hubstudio但没填环境ID`);
+      if (account.browser === 'bitbrowser' && !account.browserId) throw new Error(`账号 "${account.name}" 是比特浏览器但没填环境ID`);
     }
     saveAccounts(accounts);
     res.json({ ok: true });
@@ -131,6 +133,18 @@ app.post('/api/accounts/:name/resolve', (req, res) => {
     if (decision !== 'published' && decision !== 'retry') throw new Error('decision 必须是 published 或 retry');
     controller.resolveUncertain(req.params.name, decision);
     res.json({ ok: true });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+// 供添加账号弹窗里"从比特浏览器读取环境列表"用，这样不用手动去找/抄环境ID。
+app.get('/api/bitbrowser/profiles', async (req, res) => {
+  try {
+    const settings = loadSettings();
+    const adapter = createAdapter('bitbrowser', settings);
+    const profiles = await adapter.listProfiles();
+    res.json(profiles);
   } catch (err) {
     handleError(res, err);
   }

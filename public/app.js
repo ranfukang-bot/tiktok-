@@ -100,7 +100,7 @@ function renderAccounts() {
 
     card.innerHTML = `
       <span class="name">${escapeHtml(account.name)}</span>
-      <span class="tag">${account.browser === 'adspower' ? 'AdsPower' : 'Hubstudio'}</span>
+      <span class="tag">${{ adspower: 'AdsPower', hubstudio: 'Hubstudio', bitbrowser: 'BitBrowser' }[account.browser] || account.browser}</span>
       <span class="folder" title="${escapeAttr(account.videoFolder)}">${escapeHtml(account.videoFolder)}</span>
       <span class="progress">${progress}</span>
       ${stateHtml}
@@ -171,8 +171,8 @@ function openAccountModal(idx) {
   const account = isEdit ? accountsConfig[idx] : {};
   document.getElementById('a-original-name').value = isEdit ? account.name : '';
   document.getElementById('a-name').value = account.name || '';
-  document.getElementById('a-browser').value = account.browser || 'adspower';
-  document.getElementById('a-profileid').value = account.browser === 'hubstudio' ? account.containerCode || '' : account.profileId || '';
+  document.getElementById('a-browser').value = account.browser || 'bitbrowser';
+  document.getElementById('a-profileid').value = profileIdOf(account);
   document.getElementById('a-folder').value = account.videoFolder || '';
   document.getElementById('a-hashtags').value = (account.hashtagKeywords || ['fyp', 'tiktok', 'tiktokshop']).join(',');
 
@@ -197,10 +197,50 @@ function closeAccountModal() {
   modal.classList.add('hidden');
 }
 
+function profileIdOf(account) {
+  if (account.browser === 'hubstudio') return account.containerCode || '';
+  if (account.browser === 'bitbrowser') return account.browserId || '';
+  return account.profileId || '';
+}
+
+const PROFILE_ID_LABELS = {
+  adspower: '环境ID（AdsPower环境列表里的ID）',
+  hubstudio: '环境ID（containerCode）',
+  bitbrowser: '环境ID（比特浏览器窗口环境的id，可以从右边下拉框按名字选）',
+};
+
+let bitbrowserProfilesLoaded = false;
+
 function updateBrowserFields() {
   const browser = document.getElementById('a-browser').value;
-  document.getElementById('a-profileid-label').textContent = browser === 'hubstudio' ? '环境ID（containerCode）' : '环境ID（AdsPower环境列表里的ID）';
+  document.getElementById('a-profileid-label').textContent = PROFILE_ID_LABELS[browser] || '环境ID';
+  const picker = document.getElementById('a-bitbrowser-picker');
+  const hint = document.getElementById('a-bitbrowser-hint');
+  const isBit = browser === 'bitbrowser';
+  picker.style.display = isBit ? 'inline-block' : 'none';
+  hint.style.display = isBit ? 'block' : 'none';
+  if (isBit && !bitbrowserProfilesLoaded) {
+    bitbrowserProfilesLoaded = true;
+    loadBitBrowserProfiles();
+  }
 }
+
+async function loadBitBrowserProfiles() {
+  const picker = document.getElementById('a-bitbrowser-picker');
+  try {
+    const profiles = await api('GET', '/api/bitbrowser/profiles');
+    picker.innerHTML =
+      '<option value="">从列表选择…</option>' +
+      profiles.map((p) => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name || p.id)}${p.remark ? ' - ' + escapeHtml(p.remark) : ''}</option>`).join('');
+  } catch (err) {
+    picker.innerHTML = '<option value="">读取失败，手动填ID</option>';
+    bitbrowserProfilesLoaded = false; // 允许下次重新尝试
+  }
+}
+
+document.getElementById('a-bitbrowser-picker').addEventListener('change', (e) => {
+  if (e.target.value) document.getElementById('a-profileid').value = e.target.value;
+});
 
 function updateLocaleFields() {
   document.getElementById('a-custom-text').style.display = document.getElementById('a-locale').value === 'custom' ? 'block' : 'none';
@@ -274,8 +314,10 @@ accountForm.addEventListener('submit', async (e) => {
   };
   if (browser === 'adspower') {
     account.profileId = document.getElementById('a-profileid').value.trim();
-  } else {
+  } else if (browser === 'hubstudio') {
     account.containerCode = document.getElementById('a-profileid').value.trim();
+  } else {
+    account.browserId = document.getElementById('a-profileid').value.trim();
   }
 
   // 保留原有账号的启用状态等未在表单里出现的字段
@@ -315,6 +357,9 @@ function fillSettingsForm(settings) {
   document.getElementById('s-concurrency').value = settings.concurrency || 1;
   document.getElementById('s-scan-seconds').value = Math.round((settings.folderScanIntervalMs || 30000) / 1000);
 
+  const bit = settings.bitbrowser || {};
+  document.getElementById('s-bit-baseurl').value = bit.baseUrl || '';
+
   const ads = settings.adspower || {};
   document.getElementById('s-ads-baseurl').value = ads.baseUrl || '';
   document.getElementById('s-ads-apikey').value = ads.apiKey || '';
@@ -335,6 +380,9 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
   settings.maxIntervalMs = Math.round(Number(document.getElementById('s-max-hours').value) * 3600000);
   settings.concurrency = Number(document.getElementById('s-concurrency').value);
   settings.folderScanIntervalMs = Number(document.getElementById('s-scan-seconds').value) * 1000;
+  settings.bitbrowser = {
+    baseUrl: document.getElementById('s-bit-baseurl').value.trim(),
+  };
   settings.adspower = {
     baseUrl: document.getElementById('s-ads-baseurl').value.trim(),
     apiKey: document.getElementById('s-ads-apikey').value.trim(),
