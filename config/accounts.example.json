@@ -1,18 +1,19 @@
 [
   {
-    "name": "马来一号",
+    "_说明": "这是示例文件，里面全是编的假数据。复制成 accounts.json 后填你自己的，或者直接在网页控制台上添加账号（推荐）。accounts.json 已经在 .gitignore 里，不会被提交。",
+    "name": "示例账号A",
     "enabled": true,
-    "browser": "adspower",
-    "profileId": "1786785348",
-    "videoFolder": "/path/to/videos/malaysia-1",
+    "browser": "bitbrowser",
+    "browserId": "请填比特浏览器的环境ID",
+    "videoFolder": "D:\\发布视频\\示例账号A",
     "hashtagKeywords": ["fyp", "tiktok", "tiktokshop"]
   },
   {
-    "name": "菲律宾1号",
+    "name": "示例账号B（英文界面）",
     "enabled": true,
-    "browser": "hubstudio",
-    "containerCode": "223012801",
-    "videoFolder": "/path/to/videos/philippines-1",
+    "browser": "bitbrowser",
+    "browserId": "请填比特浏览器的环境ID",
+    "videoFolder": "D:\\发布视频\\示例账号B",
     "textOverrides": {
       "nextButton": "Next",
       "searchProductPlaceholder": "Search product",
