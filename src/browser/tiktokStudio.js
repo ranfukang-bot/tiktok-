@@ -36,17 +36,52 @@ function installAndBridgeLogs(page, log) {
 // （不会有被人搜到的效果）。用chip点出来的才是TikTok自己认的真话题，宁可要求
 // "新账号先手动发一条建立历史记录"这个一次性的麻烦步骤。
 //
-// ⚠️ chip必须用 page.mouse.click() 这种真实鼠标事件点，不能在页面里用
-// element.click()。本地诊断复现的结论：element.click() 只发一个
-// isTrusted:false 的 click，缺少 pointerdown/mousedown/mouseup；建议面板依赖
-// mousedown 保住编辑器选区，选区失效后 Draft.js 插入标签时抛异常，被React
-// 错误边界接住(所以 window.onerror 一条都抓不到)，页面变成"Ada masalah"。
-// 详细证据链见 injected.js 里 locateHashtagChip 的注释。
+// 标题清空和chip点击都必须走CDP真实输入事件。真实TikTok上的A/B复现结果：
+//   旧 execCommand 清空 + element.click()   -> 崩
+//   旧 execCommand 清空 + page.mouse.click() -> 仍然崩
+//   Ctrl+A/Backspace + page.mouse.click()     -> 三个标签全部成功
+// 因此根因是旧清空路径让Draft.js的可见DOM与EditorState/选区不同步；后续无论用
+// 哪种方式点chip，插入标签都会触发错误边界。下面完整复刻手动成功的输入序列。
+async function clearCaptionWithRealKeyboard(page, log) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const target = await page.evaluate(() => window.__tkq.locateCaptionEditor());
+    if (!target) throw new Error('找不到可见的文案编辑框，无法安全清空默认标题');
+
+    await page.mouse.move(target.x, target.y);
+    await sleep(60 + Math.random() * 90);
+    await page.mouse.click(target.x, target.y);
+    await sleep(120 + Math.random() * 100);
+
+    if (target.text) {
+      await page.keyboard.press('Control+A');
+      await sleep(180 + Math.random() * 120);
+      const selectedText = await page.evaluate(() => window.__tkq.getCaptionSelectionText());
+      if (!selectedText) {
+        log.warn(`真实键盘没有全选到默认标题，正在重试（${attempt}/3）`);
+        await humanDelay(350, 650);
+        continue;
+      }
+      await page.keyboard.press('Backspace');
+    }
+
+    const cleared = await page.evaluate(() => window.__tkq.waitForCaptionCleared());
+    if (cleared) {
+      log.info(`已用真实 Ctrl+A + Backspace 清空默认标题（第${attempt}次）`);
+      return;
+    }
+
+    log.warn(`默认标题在真实键盘清空后又被页面恢复，正在重试（${attempt}/3）`);
+    await humanDelay(350, 650);
+  }
+
+  throw new Error('Draft.js没有稳定清空默认标题，已停止，绝不会带商品ID/文件名发布');
+}
+
 async function fillCaption(page, config, log) {
-  // 真实鼠标事件按视口坐标派发，页面在后台时坐标可能对不上，先把标签页提到前台
+  // 真实鼠标/键盘事件依赖当前页面焦点和视口坐标，先把标签页提到前台
   await page.bringToFront().catch(() => {});
 
-  await page.evaluate(() => window.__tkq.clearCaption());
+  await clearCaptionWithRealKeyboard(page, log);
   await humanDelay(1200, 2000);
 
   for (const keyword of config.hashtagKeywords) {
@@ -84,14 +119,16 @@ async function isCleanUploadPage(page) {
   return page.evaluate(() => !document.querySelector('video, [data-e2e="video_preview"]'));
 }
 
-// 原脚本全程待在同一个页面里，靠点侧边栏"上传"按钮做页内跳转，从来不整页刷新。
-// 这里只在页面确实不干净时才刷新——不能像之前那样每一轮都无条件整页刷新：
-// 发布成功后已经通过 clickUploadEntranceAndWait 正常跳回了干净的上传页，
-// 下一轮再对着这个刚启动完的页面重新整页刷新一次纯属多余，而且怀疑正是
-// TikTok自己偶尔崩溃(Ada masalah/Coba lagi)的诱因之一——原脚本没有这个动作，
-// 没这个问题。刷新还顺带清掉了 window.__tkq，避免用错误config安装过的旧实例
-// 被复用（installTkqInPage 是"装过一次就不再重装"的单例），所以刷新过的分支
-// 后面调用方还是会重新执行一次 installTkqInPage。
+// 原脚本全程待在同一个页面里，靠点侧边栏"上传"按钮做页内跳转，从来不整页刷新，
+// 这里跟着它来：只在页面确实不干净时才刷新。发布成功后已经通过
+// clickUploadEntranceAndWait 正常跳回了干净的上传页，下一轮再对着这个刚启动完的
+// 页面重新整页刷新一次纯属多余。
+// （注：曾经怀疑过这个多余的刷新是"Ada masalah"崩溃的诱因，已被真实A/B实验证伪——
+// 真正的根因是旧的 execCommand 清空标题路径破坏了 Draft.js 状态，见上面 fillCaption
+// 的注释。少刷新这件事本身仍然值得保留，只是跟那个崩溃无关。）
+// 刷新还顺带清掉了 window.__tkq，避免用错误config安装过的旧实例被复用
+// （installTkqInPage 是"装过一次就不再重装"的单例），所以刷新过的分支后面
+// 调用方还是会重新执行一次 installTkqInPage。
 async function ensureOnUploadPage(page, log) {
   if (await isCleanUploadPage(page)) {
     log.info('页面已经是干净的上传页，不用整页刷新');

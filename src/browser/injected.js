@@ -187,67 +187,48 @@ export function installTkqInPage(config) {
     return (editable.innerText || editable.textContent || '').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
   }
 
-  function selectEditableContents(editable) {
-    const selection = window.getSelection();
-    if (!selection) throw new Error('浏览器无法取得文案框选区');
-    const range = document.createRange();
-    range.selectNodeContents(editable);
-    selection.removeAllRanges();
-    selection.addRange(range);
+  // 这里只返回真实鼠标可以点击的坐标，不在页面上下文里调用 focus()/修改选区/改DOM。
+  // Draft.js 对脚本直接操纵 Selection + execCommand 的组合非常敏感；真实 TikTok
+  // 对照实验已经确认，那条旧路径虽然表面上清空成功，却会让下一次插入历史标签时
+  // 进入错误页。实际聚焦和清空统一交给 Node 端的 CDP 鼠标/键盘事件完成。
+  async function locateCaptionEditor() {
+    const editable = await waitFor(getCaptionEditable);
+    editable.scrollIntoView({ block: 'center' });
+    await sleep(100);
+    const rect = editable.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return {
+      x: rect.left + Math.min(80, rect.width / 2),
+      y: rect.top + Math.min(24, rect.height / 2),
+      text: getCaptionText(editable),
+    };
   }
 
-  async function waitForCaptionEmpty(timeout = 1500) {
+  function getCaptionSelectionText() {
+    const editable = getCaptionEditable();
+    const selection = window.getSelection();
+    if (!editable || !selection || selection.rangeCount === 0) return '';
+    const range = selection.getRangeAt(0);
+    const selectionBelongsToCaption =
+      editable.contains(range.commonAncestorContainer) || range.commonAncestorContainer === editable;
+    return selectionBelongsToCaption ? selection.toString() : '';
+  }
+
+  async function waitForCaptionCleared(timeout = 3000, stableMs = 1200) {
     const deadline = Date.now() + timeout;
+    let emptySince = 0;
     while (Date.now() < deadline) {
       checkForAppCrash();
       const editable = getCaptionEditable();
-      if (editable && !getCaptionText(editable)) return editable;
+      if (editable && !getCaptionText(editable)) {
+        if (!emptySince) emptySince = Date.now();
+        if (Date.now() - emptySince >= stableMs) return true;
+      } else {
+        emptySince = 0;
+      }
       await sleep(100);
     }
-    return null;
-  }
-
-  async function clearCaptionSafely() {
-    // 不能用 execCommand('delete') 或直接改 innerHTML/textContent：会绕过 Draft.js 状态，
-    // 已确认会触发 removeChild NotFoundError 让整页崩溃。全选后用 insertText 替换成一个空格，
-    // Draft.js 会同步自己的 EditorState。某些指纹浏览器会延迟重绘旧标题，最多重试3次。
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      let editable = await waitFor(getCaptionEditable);
-      const before = getCaptionText(editable);
-      if (before) {
-        editable.focus();
-        selectEditableContents(editable);
-        document.dispatchEvent(new Event('selectionchange', { bubbles: true }));
-        editable.dispatchEvent(new Event('select', { bubbles: true }));
-        await sleep(250);
-
-        const selection = window.getSelection();
-        if (!selection || !selection.toString()) {
-          throw new Error('自动清空失败：Draft.js文案没有被全选，已停止以避免误发布');
-        }
-
-        const replaced = document.execCommand('insertText', false, ' ');
-        if (!replaced) {
-          throw new Error('浏览器没有执行安全文案替换，已停止以避免带错误文案发布');
-        }
-      }
-
-      editable = await waitForCaptionEmpty(1800);
-      if (editable) {
-        editable.blur();
-        await sleep(1500);
-        const current = getCaptionEditable();
-        if (current && !getCaptionText(current)) {
-          log(`已通过Draft.js安全替换清空默认文案（第${attempt}次）`);
-          return current;
-        }
-      }
-
-      log(`⚠️ 默认标题在清空后又被页面恢复，正在重试（${attempt}/3）`);
-      await sleep(400);
-    }
-
-    throw new Error('Draft.js没有稳定清空默认标题，已停止，绝不会带商品ID/文件名发布');
+    return false;
   }
 
   function captionContainsHashtag(text, keyword) {
@@ -352,33 +333,20 @@ export function installTkqInPage(config) {
   // "#fyp"只是纯文本，不会被TikTok识别成真正的话题标签，而且实测出过页面崩溃。
   // 找不到chip就直接报错暂停，交给人去给这个账号先手动发一条建立历史记录。
 
-  async function clearCaption() {
-    await clearCaptionSafely();
-  }
-
-  // 聚焦文案框让历史标签面板弹出来，找到目标chip，返回它在视口里的中心坐标。
+  // 在真实键盘清空后保持编辑器焦点，找到历史标签chip并返回它在视口里的中心坐标。
   // 注意这里【只定位不点击】——实际点击由 Node 端用 Playwright 的真实鼠标事件完成。
   //
-  // 为什么不能再用 element.click()（本地诊断复现出来的结论）：
-  //   诊断数据显示，点击chip约0.86秒后页面变成"Ada masalah"，但全程
-  //   window.onerror / unhandledrejection / Playwright pageerror 一条都没有，
-  //   所有网络请求也全是200/204。"没有错误堆栈"恰恰是React错误边界接住了内部
-  //   异常的典型特征(错误边界捕获后不会冒泡到window.onerror)。而同账号同视频的
-  //   真人鼠标点击完全正常。
-  //   element.click() 只派发一个 isTrusted:false 的 click 事件，不会派发
-  //   pointerdown/mousedown/mouseup。这类建议面板普遍依赖 mousedown 里
-  //   preventDefault() 来保住编辑器的焦点和选区；mousedown 没来，选区就是失效的，
-  //   插入标签时 Draft.js 拿着无效选区操作就会抛异常 → 错误边界 → "Ada masalah"。
-  //   Playwright 的 page.mouse.click() 走 CDP Input 域，产生完整的
-  //   pointerdown/mousedown/mouseup/click 序列且 isTrusted:true，跟真人点击
-  //   在事件层面无法区分。
+  // 真实 TikTok 的A/B复现已经进一步确认：只把chip换成真实鼠标仍然会崩；只有
+  // 同时把标题清空改成真实 Ctrl+A + Backspace 才能稳定插入三个标签。也就是说
+  // 旧 execCommand 清空留下的Draft.js选区/EditorState不一致才是根因，真实鼠标
+  // 点击chip是完整修复的一部分，但不是单独的根因。
   //
   // 返回 null 表示这个账号还没有这个历史标签(需要人工先手动发一条建立记录)。
   async function locateHashtagChip(keyword) {
-    const editable = await waitFor(getCaptionEditable);
-    editable.focus();
-    // 点完一个标签面板经常自己收起，每轮都重新聚焦让它再弹出来
-    await sleep(700);
+    await waitFor(getCaptionEditable);
+    // 不再调用 editable.focus()：标题由真实鼠标聚焦并用真实键盘清空，必须保留
+    // 浏览器当前的真实焦点和选区，让建议面板自己的 mousedown 逻辑接管。
+    await sleep(250);
     checkForAppCrash();
 
     const chip = Array.from(document.querySelectorAll('.suggest-item')).find(
@@ -742,7 +710,9 @@ export function installTkqInPage(config) {
     isUploadPage,
     isContentPage,
     waitForUploadComplete,
-    clearCaption,
+    locateCaptionEditor,
+    getCaptionSelectionText,
+    waitForCaptionCleared,
     locateHashtagChip,
     confirmHashtagInserted,
     finalizeCaption,
