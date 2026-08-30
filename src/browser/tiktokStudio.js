@@ -29,6 +29,33 @@ function installAndBridgeLogs(page, log) {
   page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
 }
 
+// 文案/话题标签：只走"点历史标签面板里的chip"这一条路径。
+//
+// 之前试过找不到chip时改用键盘/execCommand把文字直接打进去当兜底，撤回了：
+// 实测发现那样打出来的"#fyp"只是纯文本，不会被TikTok识别成真正的话题标签
+// （不会有被人搜到的效果），而且至少出过一次页面直接崩溃。用chip点出来的
+// 才是TikTok自己认的真话题，宁可要求"新账号先手动发一条建立历史记录"这个
+// 麻烦一次性的步骤，也不要每次都可能发出去一条文案里带无效"#标签"的内容。
+async function fillCaption(page, config, log) {
+  await page.evaluate(() => window.__tkq.clearCaption());
+  // 用户实测撞到的崩溃就发生在"清空默认标题成功"和"点第一个历史标签"这两步之间，
+  // 这里额外多等一段，让刚被清空的Draft.js编辑器有更多时间稳定下来再碰它。
+  await humanDelay(1200, 2000);
+
+  for (const keyword of config.hashtagKeywords) {
+    const clicked = await page.evaluate(([k]) => window.__tkq.clickHashtagChipIfPresent(k), [keyword]);
+    if (!clicked) {
+      throw new Error(
+        `没找到历史话题 #${keyword} 的建议项。这个账号大概率还没用过这个标签，需要你先在这个账号的` +
+          `TikTok Studio里手动发一条带上 #${keyword} 的作品，TikTok记住这个历史标签之后，自动发布才点得到它`
+      );
+    }
+    await humanDelay(400, 900);
+  }
+
+  return page.evaluate(() => window.__tkq.finalizeCaption());
+}
+
 // 页面是不是已经处于"可以直接选文件"的干净状态：在上传页、有可用的文件输入框、
 // 且没有已经选中在编辑中的视频（上一次如果失败在选完文件之后，会卡在"编辑已选
 // 视频"这个状态，这时候页面上根本没有 <input type=file>）。
@@ -42,16 +69,14 @@ async function isCleanUploadPage(page) {
   return page.evaluate(() => !document.querySelector('video, [data-e2e="video_preview"]'));
 }
 
-// 原脚本全程待在同一个页面里，靠点侧边栏"上传"按钮做页内跳转，从来不整页刷新，
-// 这里跟着它来：只在页面确实不干净时才刷新。发布成功后已经通过
-// clickUploadEntranceAndWait 正常跳回了干净的上传页，下一轮再对着这个刚启动完的
-// 页面重新整页刷新一次纯属多余。
-// （注：曾经怀疑过这个多余的刷新是"Ada masalah"崩溃的诱因，后来用户指出崩溃点
-// 其实在同一个页面内的加话题标签那一步，跟刷不刷新无关，真正的原因见 injected.js
-// 里 fillCaption 的注释。少刷新这件事本身仍然值得保留，只是跟那个崩溃无关。）
-// 刷新还顺带清掉了 window.__tkq，避免用错误config安装过的旧实例被复用
-// （installTkqInPage 是"装过一次就不再重装"的单例），所以刷新过的分支后面
-// 调用方还是会重新执行一次 installTkqInPage。
+// 原脚本全程待在同一个页面里，靠点侧边栏"上传"按钮做页内跳转，从来不整页刷新。
+// 这里只在页面确实不干净时才刷新——不能像之前那样每一轮都无条件整页刷新：
+// 发布成功后已经通过 clickUploadEntranceAndWait 正常跳回了干净的上传页，
+// 下一轮再对着这个刚启动完的页面重新整页刷新一次纯属多余，而且怀疑正是
+// TikTok自己偶尔崩溃(Ada masalah/Coba lagi)的诱因之一——原脚本没有这个动作，
+// 没这个问题。刷新还顺带清掉了 window.__tkq，避免用错误config安装过的旧实例
+// 被复用（installTkqInPage 是"装过一次就不再重装"的单例），所以刷新过的分支
+// 后面调用方还是会重新执行一次 installTkqInPage。
 async function ensureOnUploadPage(page, log) {
   if (await isCleanUploadPage(page)) {
     log.info('页面已经是干净的上传页，不用整页刷新');
@@ -79,11 +104,8 @@ export async function runOneUploadCycle({ page, account, item, config, log, befo
   await humanDelay(1500, 3000);
   await page.evaluate(([filename]) => window.__tkq.waitForUploadComplete(filename), [item.filename]);
 
-  // 清空默认标题 + 依次点三个历史话题标签，整段在页面里一次跑完，中间绝不能插进
-  // Node端的等待或额外的 page.evaluate——历史标签面板会自己收起，拆开来点很容易
-  // 撞上它正在重新渲染的瞬间，把整页点崩(详见 injected.js 里 fillCaption 的注释)。
   await humanDelay();
-  await page.evaluate(() => window.__tkq.fillCaption());
+  await fillCaption(page, config, log);
 
   await humanDelay();
   await page.evaluate(([productId]) => window.__tkq.addProductLink(productId), [item.productId]);

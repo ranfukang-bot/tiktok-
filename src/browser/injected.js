@@ -347,49 +347,43 @@ export function installTkqInPage(config) {
     log(`视频和默认标题均已就绪 ✅（待清空：${stableText.slice(0, 80)}）`);
   }
 
-  // ===== 文案/话题标签 =====
-  //
-  // ⚠️ 这一整段必须在页面里一次跑完，不能再像之前那样拆成"清空"/"点标签1"/"点标签2"…
-  // 好几次 page.evaluate 由Node端串起来。原因：历史标签建议面板是动态的，原脚本
-  // 自己的注释就写过"点完一个标签，历史标签面板经常会自动收起，重新聚焦一下让它
-  // 再出现"。拆成多次远程调用会在每两步之间插进去几百毫秒到几秒的空档，很容易撞上
-  // 面板正在收起/重新渲染的那一瞬间去点它——React对着正在卸载的节点处理点击，就会
-  // 触发下面 clearCaptionSafely 注释里提到的那个 removeChild NotFoundError，
-  // 直接把整页打崩成"Ada masalah / Coba lagi"。用户实测就是崩在这里，而且时好时坏
-  // (同一批任务里第一个账号成功、第二个崩)，正是竞态该有的样子。
-  //
-  // 当初拆开是为了支持"找不到chip就用键盘打字"的兜底(打字得由Node端驱动)，
-  // 那条路径已经废弃删掉了，所以这个拆分现在纯粹是历史包袱，合回来即可。
-  // 时序完全照抄原脚本：focus后固定 sleep(300)，中间不加任何额外等待。
-  async function fillCaption() {
+  // ===== 文案/话题标签：只走"点历史标签面板里的chip"这一条路径。=====
+  // 曾经加过"找不到chip就用键盘/execCommand直接打字"的兜底，撤回了：那样打出来的
+  // "#fyp"只是纯文本，不会被TikTok识别成真正的话题标签，而且实测出过页面崩溃。
+  // 找不到chip就直接报错暂停，交给人去给这个账号先手动发一条建立历史记录。
+
+  async function clearCaption() {
     await clearCaptionSafely();
+  }
 
-    for (const keyword of config.hashtagKeywords) {
-      // 点完一个标签面板经常自己收起，每轮都重新聚焦让它再弹出来（原脚本的做法）
-      const editable = await waitFor(getCaptionEditable);
-      editable.focus();
-      await sleep(300);
-      checkForAppCrash();
+  // 尝试点击"历史标签"建议面板里已有的chip；返回是否成功，找不到chip时返回false
+  // （调用方 tiktokStudio.js 里的 fillCaption 会据此直接报错暂停，不会自己瞎打字）。
+  async function clickHashtagChipIfPresent(keyword) {
+    const editable = await waitFor(getCaptionEditable);
+    editable.focus();
+    // 刚清空过默认标题的Draft.js编辑器给多一点缓冲再碰它——原脚本自己的注释里提过，
+    // 粗暴操作这个编辑器会触发 removeChild NotFoundError 直接崩掉整个页面，
+    // 说明它对"清空之后马上又被操作"这种情况本来就比较脆弱。这里从300ms放宽到
+    // 700ms，具体有没有用还需要用户拿到真实的浏览器控制台报错后再确认。
+    await sleep(700);
+    checkForAppCrash();
 
-      const chip = Array.from(document.querySelectorAll('.suggest-item')).find(
-        (el) => isVisible(el) && el.textContent.replace(/\s/g, '').toLowerCase() === ('#' + keyword).toLowerCase()
-      );
-      if (!chip) {
-        throw new Error(
-          `没找到历史话题 #${keyword} 的建议项。这个账号大概率还没用过这个标签，需要你先在这个账号的` +
-            `TikTok Studio里手动发一条带上 #${keyword} 的作品，TikTok记住这个历史标签之后，自动发布才点得到它`
-        );
-      }
+    const chip = Array.from(document.querySelectorAll('.suggest-item')).find(
+      (el) => isVisible(el) && el.textContent.replace(/\s/g, '').toLowerCase() === ('#' + keyword).toLowerCase()
+    );
+    if (!chip) return false;
 
-      fireClick(chip);
-      const inserted = await waitForCaptionHashtag(keyword);
-      if (!inserted) {
-        throw new Error(`已点击 #${keyword} 建议项，但文案框里没有确认到该标签，需要人工检查`);
-      }
-      assertCaptionSafe(`添加 #${keyword} 后检查`, false);
-      log(`已添加并确认历史话题: #${keyword}`);
+    fireClick(chip);
+    const inserted = await waitForCaptionHashtag(keyword);
+    if (!inserted) {
+      throw new Error(`已点击 #${keyword} 建议项，但文案框里没有确认到该标签，需要人工检查`);
     }
+    assertCaptionSafe(`添加 #${keyword} 后检查`, false);
+    log(`已添加并确认历史话题: #${keyword}`);
+    return true;
+  }
 
+  async function finalizeCaption() {
     const editable = getCaptionEditable();
     if (editable) editable.blur();
     await sleep(1200);
@@ -725,7 +719,9 @@ export function installTkqInPage(config) {
     isUploadPage,
     isContentPage,
     waitForUploadComplete,
-    fillCaption,
+    clearCaption,
+    clickHashtagChipIfPresent,
+    finalizeCaption,
     addProductLink,
     setAiDisclosure,
     setPublishNow,
