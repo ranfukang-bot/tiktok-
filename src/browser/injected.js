@@ -356,24 +356,47 @@ export function installTkqInPage(config) {
     await clearCaptionSafely();
   }
 
-  // 尝试点击"历史标签"建议面板里已有的chip；返回是否成功，找不到chip时返回false
-  // （调用方 tiktokStudio.js 里的 fillCaption 会据此直接报错暂停，不会自己瞎打字）。
-  async function clickHashtagChipIfPresent(keyword) {
+  // 聚焦文案框让历史标签面板弹出来，找到目标chip，返回它在视口里的中心坐标。
+  // 注意这里【只定位不点击】——实际点击由 Node 端用 Playwright 的真实鼠标事件完成。
+  //
+  // 为什么不能再用 element.click()（本地诊断复现出来的结论）：
+  //   诊断数据显示，点击chip约0.86秒后页面变成"Ada masalah"，但全程
+  //   window.onerror / unhandledrejection / Playwright pageerror 一条都没有，
+  //   所有网络请求也全是200/204。"没有错误堆栈"恰恰是React错误边界接住了内部
+  //   异常的典型特征(错误边界捕获后不会冒泡到window.onerror)。而同账号同视频的
+  //   真人鼠标点击完全正常。
+  //   element.click() 只派发一个 isTrusted:false 的 click 事件，不会派发
+  //   pointerdown/mousedown/mouseup。这类建议面板普遍依赖 mousedown 里
+  //   preventDefault() 来保住编辑器的焦点和选区；mousedown 没来，选区就是失效的，
+  //   插入标签时 Draft.js 拿着无效选区操作就会抛异常 → 错误边界 → "Ada masalah"。
+  //   Playwright 的 page.mouse.click() 走 CDP Input 域，产生完整的
+  //   pointerdown/mousedown/mouseup/click 序列且 isTrusted:true，跟真人点击
+  //   在事件层面无法区分。
+  //
+  // 返回 null 表示这个账号还没有这个历史标签(需要人工先手动发一条建立记录)。
+  async function locateHashtagChip(keyword) {
     const editable = await waitFor(getCaptionEditable);
     editable.focus();
-    // 刚清空过默认标题的Draft.js编辑器给多一点缓冲再碰它——原脚本自己的注释里提过，
-    // 粗暴操作这个编辑器会触发 removeChild NotFoundError 直接崩掉整个页面，
-    // 说明它对"清空之后马上又被操作"这种情况本来就比较脆弱。这里从300ms放宽到
-    // 700ms，具体有没有用还需要用户拿到真实的浏览器控制台报错后再确认。
+    // 点完一个标签面板经常自己收起，每轮都重新聚焦让它再弹出来
     await sleep(700);
     checkForAppCrash();
 
     const chip = Array.from(document.querySelectorAll('.suggest-item')).find(
       (el) => isVisible(el) && el.textContent.replace(/\s/g, '').toLowerCase() === ('#' + keyword).toLowerCase()
     );
-    if (!chip) return false;
+    if (!chip) return null;
 
-    fireClick(chip);
+    // 滚到可视区域再取坐标；不改DOM(不加data属性之类)，这个编辑器很脆弱，
+    // 能不碰它的DOM就不碰。
+    chip.scrollIntoView({ block: 'center' });
+    await sleep(200);
+    const rect = chip.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  }
+
+  // Node端用真实鼠标点完之后调这个确认标签确实进到文案里了
+  async function confirmHashtagInserted(keyword) {
     const inserted = await waitForCaptionHashtag(keyword);
     if (!inserted) {
       throw new Error(`已点击 #${keyword} 建议项，但文案框里没有确认到该标签，需要人工检查`);
@@ -720,7 +743,8 @@ export function installTkqInPage(config) {
     isContentPage,
     waitForUploadComplete,
     clearCaption,
-    clickHashtagChipIfPresent,
+    locateHashtagChip,
+    confirmHashtagInserted,
     finalizeCaption,
     addProductLink,
     setAiDisclosure,

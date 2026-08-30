@@ -33,23 +33,38 @@ function installAndBridgeLogs(page, log) {
 //
 // 之前试过找不到chip时改用键盘/execCommand把文字直接打进去当兜底，撤回了：
 // 实测发现那样打出来的"#fyp"只是纯文本，不会被TikTok识别成真正的话题标签
-// （不会有被人搜到的效果），而且至少出过一次页面直接崩溃。用chip点出来的
-// 才是TikTok自己认的真话题，宁可要求"新账号先手动发一条建立历史记录"这个
-// 麻烦一次性的步骤，也不要每次都可能发出去一条文案里带无效"#标签"的内容。
+// （不会有被人搜到的效果）。用chip点出来的才是TikTok自己认的真话题，宁可要求
+// "新账号先手动发一条建立历史记录"这个一次性的麻烦步骤。
+//
+// ⚠️ chip必须用 page.mouse.click() 这种真实鼠标事件点，不能在页面里用
+// element.click()。本地诊断复现的结论：element.click() 只发一个
+// isTrusted:false 的 click，缺少 pointerdown/mousedown/mouseup；建议面板依赖
+// mousedown 保住编辑器选区，选区失效后 Draft.js 插入标签时抛异常，被React
+// 错误边界接住(所以 window.onerror 一条都抓不到)，页面变成"Ada masalah"。
+// 详细证据链见 injected.js 里 locateHashtagChip 的注释。
 async function fillCaption(page, config, log) {
+  // 真实鼠标事件按视口坐标派发，页面在后台时坐标可能对不上，先把标签页提到前台
+  await page.bringToFront().catch(() => {});
+
   await page.evaluate(() => window.__tkq.clearCaption());
-  // 用户实测撞到的崩溃就发生在"清空默认标题成功"和"点第一个历史标签"这两步之间，
-  // 这里额外多等一段，让刚被清空的Draft.js编辑器有更多时间稳定下来再碰它。
   await humanDelay(1200, 2000);
 
   for (const keyword of config.hashtagKeywords) {
-    const clicked = await page.evaluate(([k]) => window.__tkq.clickHashtagChipIfPresent(k), [keyword]);
-    if (!clicked) {
+    const pos = await page.evaluate(([k]) => window.__tkq.locateHashtagChip(k), [keyword]);
+    if (!pos) {
       throw new Error(
         `没找到历史话题 #${keyword} 的建议项。这个账号大概率还没用过这个标签，需要你先在这个账号的` +
           `TikTok Studio里手动发一条带上 #${keyword} 的作品，TikTok记住这个历史标签之后，自动发布才点得到它`
       );
     }
+
+    // 走CDP Input域派发完整的 pointerdown/mousedown/mouseup/click，isTrusted:true，
+    // 跟真人点击在事件层面无法区分——诊断里真人手点是能成功的，这里就是在复刻它。
+    await page.mouse.move(pos.x, pos.y);
+    await sleep(60 + Math.random() * 90);
+    await page.mouse.click(pos.x, pos.y);
+
+    await page.evaluate(([k]) => window.__tkq.confirmHashtagInserted(k), [keyword]);
     await humanDelay(400, 900);
   }
 
