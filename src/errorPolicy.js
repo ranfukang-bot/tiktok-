@@ -13,6 +13,7 @@ const NEVER_RETRY_CODES = new Set(['uncertain_publish']);
 
 // 配置类：人不动手改，重试一万次也不会好
 const CONFIG_PATTERNS = [
+  /界面文案配置缺失/,
   /找不到文件夹/,
   /Require api-key/i,
   /无法使用API/,

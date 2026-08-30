@@ -73,6 +73,7 @@ export function getStatus() {
         retryAt: state.retryAt,
         lastError: state.lastError,
         publishedToday,
+        timezone,
         dailyLimit: Number.isFinite(dailyLimit) ? dailyLimit : null,
         quotaExhausted: Number.isFinite(dailyLimit) && publishedToday >= dailyLimit,
       };

@@ -4,7 +4,12 @@
 // 去掉了 GM_setValue/文件夹句柄/面板UI 这些只有油猴环境才需要的部分，
 // 状态记录、调度、文件读取全部交给 Node 端（Playwright）负责。
 export function installTkqInPage(config) {
-  if (window.__tkq) return; // 避免同一个页面被重复安装
+  // 这里【故意】没有 `if (window.__tkq) return` 的单例守卫。
+  // 那个守卫会把重装时传进来的新config悄悄丢掉，只保留第一次安装时的闭包——
+  // 提交 e58da98 就是被它坑过一次(用空config装过之后，真实config再也装不进去)。
+  // 现在文案可以由用户随时在网页上改，守卫会导致"改了配置但页面还用旧的"。
+  // 重装是安全的：函数体只声明闭包再赋值 window.__tkq，没有事件监听、没有定时器、
+  // 不碰DOM，而且Node端的 page.evaluate 是串行的，不会有执行到一半的调用被打断。
 
   function log(msg) {
     // eslint-disable-next-line no-console
@@ -17,6 +22,54 @@ export function installTkqInPage(config) {
 
   function humanDelay(minMs = 800, maxMs = 2200) {
     return sleep(minMs + Math.random() * (maxMs - minMs));
+  }
+
+  // ===== 界面文案（跨语言/跨地区可配置）=====
+  // 真实值由 Node 端 src/config.js 里的 DEFAULT_PAGE_TEXT 合并后传进来。
+  // 这里【不】再复制一份印尼语默认值——那会变成第三处真值来源(config.js / app.js / 这里)，
+  // 迟早漂移。这里只负责"取不到时安全降级"。
+  const pageText = (config && config.text) || {};
+
+  // 取"任一命中即可"的文案列表。保持原数组顺序：productConfirmButtons /
+  // postButtonTexts / showMoreButtons 是按优先级排的，第一个匹配上的胜出，顺序不能乱。
+  function textList(key) {
+    const v = pageText[key];
+    if (Array.isArray(v)) return v.filter((s) => typeof s === 'string' && s.trim());
+    return typeof v === 'string' && v.trim() ? [v] : [];
+  }
+
+  // 取必填的单条文案。空值绝对不能放行：includes('') 恒为 true，
+  // findClickableByText('') 会匹配到页面上随便一个空元素然后点下去。
+  function requiredText(key, what) {
+    const v = pageText[key];
+    if (typeof v !== 'string' || !v.trim()) {
+      throw new Error(
+        `界面文案配置缺失：这个账号没有配置「${what}」对应的界面文字，无法安全定位元素。` +
+          '请在控制台网页上编辑该账号，把界面文案填完整'
+      );
+    }
+    return v;
+  }
+
+  // 页面文字匹配的统一入口：折叠空白 + 忽略大小写。
+  // 忽略大小写是必需的——Chrome 的 innerText 会把 CSS text-transform 算进去，
+  // TikTok 有些按钮是用CSS转成大写的，原样比较会匹配不上。
+  function normText(s) {
+    return String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  function hasAnyMarker(haystack, markers) {
+    if (!markers.length) return false;
+    const h = normText(haystack);
+    return markers.some((m) => h.includes(normText(m)));
+  }
+
+  function hasAllMarkers(haystack, markers) {
+    // 空列表必须返回 false。[].every() 恒为 true，会让崩溃检测在每一轮的
+    // 第一次 waitFor 就误报"页面崩溃"，整个账号立刻卡死并且报错信息完全误导。
+    if (!markers.length) return false;
+    const h = normText(haystack);
+    return markers.every((m) => h.includes(normText(m)));
   }
 
   function isVisible(el) {
@@ -111,12 +164,21 @@ export function installTkqInPage(config) {
 
   function isProductWorkflowModal(root) {
     if (!root || !isVisible(root)) return false;
-    const text = (root.innerText || root.textContent || '').replace(/\s+/g, ' ').trim();
-    return (
-      Boolean(root.querySelector(`input[placeholder*="${config.text.searchProductPlaceholder}"]`)) ||
-      text.includes('Tambah tautan') ||
-      text.includes('Nama produk')
-    );
+
+    // 用JS扫 placeholder，不再把用户填的文字拼进CSS属性选择器。
+    // 用户会在这里填各种语言的任意文本，含引号或反斜杠时 querySelector 直接抛
+    // SyntaxError；而且 [placeholder*=""] 在CSS里是"匹配不到任何元素"，
+    // 空值时会静默让这半边检测失效。
+    const placeholder = pageText.searchProductPlaceholder;
+    if (typeof placeholder === 'string' && placeholder.trim()) {
+      const hit = Array.from(root.querySelectorAll('input')).some((input) =>
+        normText(input.getAttribute('placeholder')).includes(normText(placeholder))
+      );
+      if (hit) return true;
+    }
+
+    const text = root.innerText || root.textContent || '';
+    return hasAnyMarker(text, textList('productModalMarkers'));
   }
 
   function getTopProductWorkflowModal() {
@@ -132,15 +194,31 @@ export function installTkqInPage(config) {
   }
 
   function assertProductPickerClosed(nextAction) {
+    // 这道闸门是靠"认弹窗上的字"实现的，两项文案都没配的话 isProductWorkflowModal
+    // 会恒为 false —— 弹窗明明盖在上面，检查却说"没开着"，然后照样去点发布。
+    // 这属于静默失效，必须停下来而不是放行。
+    const placeholder = pageText.searchProductPlaceholder;
+    const hasPlaceholder = typeof placeholder === 'string' && Boolean(placeholder.trim());
+    if (!hasPlaceholder && !textList('productModalMarkers').length) {
+      throw new Error(
+        '界面文案配置缺失：这个账号没有配置「商品搜索框提示文字」和「商品弹窗里必然出现的字」，' +
+          '无法判断商品弹窗是不是还开着。弹窗盖着时继续点击会误点到后面的页面，已停止。' +
+          '请在控制台网页上编辑该账号补上这两项文案'
+      );
+    }
     if (hasOpenProductWorkflowModal()) {
       throw new Error(`商品流程弹窗仍然打开，禁止继续${nextAction}，避免后台误点击`);
     }
   }
 
   function checkForAppCrash() {
-    const text = document.body.innerText || '';
-    if (text.includes('Ada masalah') && text.includes('Coba lagi')) {
-      throw new Error('TikTok页面自己崩溃报错了(Ada masalah/Coba lagi)，需要人工刷新页面重试');
+    // 用"全部命中才算"的语义，跟原来的 A && B 一致：单独一个"出错了"很容易
+    // 在别的提示里出现，两个词同时出现才足够确定是那个错误页。
+    // hasAllMarkers 内部对空列表返回 false —— 没配就是检测不到崩溃(退化成等超时)，
+    // 绝不能变成"恒为真"，那会让每一轮的第一次 waitFor 就误报崩溃。
+    const markers = textList('appCrashMarkers');
+    if (hasAllMarkers(document.body.innerText || '', markers)) {
+      throw new Error(`TikTok页面自己崩溃报错了(${markers.join('/')})，需要人工刷新页面重试`);
     }
   }
 
@@ -298,8 +376,17 @@ export function installTkqInPage(config) {
       const editable = getCaptionEditable();
       const caption = getCaptionText(editable);
 
-      const isExplicitDone = /Diunggah\s*\(|Uploaded\s*\(|Selesai/i.test(text);
-      const isUploading = /Tersisa\s*\d+\s*(?:detik|menit|s|m)|(?:Uploading|Mengunggah)\s*\(\d+%\)/i.test(text);
+      // 这两条印尼语/英语正则【故意保留写死】，不改成可配置的纯文字：
+      // 它们带着 "Diunggah(" 的括号锚点和 "Tersisa 30 detik" 的数字+单位锚点，
+      // 换成普通子串会明显变松——"Diunggah"单独作为过去分词出现在别处就会被误判成
+      // 上传完成，而"Mengunggah"出现在区块标题里会让"还在上传"永久卡住变成3分钟超时。
+      // 用户配置的 marker 是【叠加】在这两条之上的(或的关系)，所以印尼语路径跟改动前
+      // 完全一致，其它语言再补自己的词即可。
+      const isExplicitDone =
+        /Diunggah\s*\(|Uploaded\s*\(|Selesai/i.test(text) || hasAnyMarker(text, textList('uploadDoneMarkers'));
+      const isUploading =
+        /Tersisa\s*\d+\s*(?:detik|menit|s|m)|(?:Uploading|Mengunggah)\s*\(\d+%\)/i.test(text) ||
+        hasAnyMarker(text, textList('uploadingMarkers'));
       const hasVideoPreview = Boolean(
         document.querySelector('video') ||
           document.querySelector('[data-e2e="video_preview"]') ||
@@ -323,7 +410,10 @@ export function installTkqInPage(config) {
         stableSince = Date.now();
         return null;
       }
-      return Date.now() - stableSince >= 1000 ? editable : null;
+      // stableSince 初值是0，必须显式排除：否则文案为空时 caption !== stableText 为false，
+      // 直接落到下面这行，Date.now() - 0 >= 1000 恒为true，"稳定1秒"这个要求等于没有，
+      // 视频还在传就可能被判定成就绪。
+      return stableSince && Date.now() - stableSince >= 1000 ? editable : null;
     }, 3 * 60 * 1000, 200);
     log(`视频和默认标题均已就绪 ✅（待清空：${stableText.slice(0, 80)}）`);
   }
@@ -386,21 +476,21 @@ export function installTkqInPage(config) {
   // ===== 商品挂车 =====
   async function addProductLink(productId) {
     log('开始添加商品链接: ' + productId);
-    const addBtn = await waitFor(() => findClickableByText(config.text.addProductButton, true), 20000);
+    const addBtn = await waitFor(() => findClickableByText(requiredText('addProductButton', '添加商品按钮'), true), 20000);
     fireClick(addBtn);
 
     const nextBtn1 = await waitFor(() => {
-      const globalBtn = findClickableByText(config.text.nextButton, true);
+      const globalBtn = findClickableByText(requiredText('nextButton', '下一步按钮'), true);
       if (!globalBtn) return null;
       const dialog = getModalRoot(globalBtn);
-      return findActionByTextsWithin(dialog, [config.text.nextButton]);
+      return findActionByTextsWithin(dialog, [requiredText('nextButton', '下一步按钮')]);
     });
     fireClick(nextBtn1);
 
     await sleep(500);
     const searchInput = await waitFor(() =>
       Array.from(document.querySelectorAll('input')).find(
-        (input) => isVisible(input) && (input.getAttribute('placeholder') || '').includes(config.text.searchProductPlaceholder)
+        (input) => isVisible(input) && (input.getAttribute('placeholder') || '').includes(requiredText('searchProductPlaceholder', '商品搜索框提示文字'))
       )
     );
     const productDialog = getModalRoot(searchInput);
@@ -455,7 +545,7 @@ export function installTkqInPage(config) {
     let dialogClosed = false;
     for (let step = 1; step <= 4; step++) {
       const activeModal = await waitFor(getTopProductWorkflowModal, 10000, 150);
-      const actionBtn = await waitFor(() => findActionByTextsWithin(activeModal, config.text.productConfirmButtons), 10000, 150);
+      const actionBtn = await waitFor(() => findActionByTextsWithin(activeModal, textList('productConfirmButtons')), 10000, 150);
       const actionRoot = getModalRoot(actionBtn);
       const actionText = (actionBtn.textContent || '').trim();
       log(`点击商品弹窗操作按钮(${step}/4): ${actionText}`);
@@ -495,7 +585,7 @@ export function installTkqInPage(config) {
 
   async function setPublishNow() {
     assertProductPickerClosed('设置立即发布');
-    const radio = await waitFor(() => findClickableByText(config.text.publishNowRadioLabel));
+    const radio = await waitFor(() => findClickableByText(requiredText('publishNowRadioLabel', '立即发布选项')));
     fireClick(radio);
     await sleep(300);
     const input = radio.closest('div')?.querySelector('input[type="radio"]');
@@ -525,7 +615,7 @@ export function installTkqInPage(config) {
         const container = getAdvancedContainer();
         const btn = container ? container.querySelector('.more-btn') : null;
         if (btn) return btn;
-        for (const t of config.text.showMoreButtons) {
+        for (const t of textList('showMoreButtons')) {
           const b = findClickableByText(t, false);
           if (b) return b;
         }
@@ -543,7 +633,8 @@ export function installTkqInPage(config) {
       await sleep(300);
     }
 
-    const findAiLabel = () => findByText('span', config.text.aiDisclosureLabel) || findByText('div', config.text.aiDisclosureLabel);
+    const findAiLabel = () => findByText('span', requiredText('aiDisclosureLabel', 'AI声明开关')) ||
+      findByText('div', requiredText('aiDisclosureLabel', 'AI声明开关'));
 
     // 实际抓到的DOM结构里，role="switch"的是那个隐藏的<input>，跟可见的thumb是
     // 兄弟节点（都在同一个 Switch__content 容器下），不是thumb的祖先节点，
@@ -592,25 +683,38 @@ export function installTkqInPage(config) {
   function getPostButton() {
     return (
       document.querySelector('[data-e2e="post_video_button"]') ||
-      config.text.postButtonTexts.map((t) => findClickableByText(t, true)).find(Boolean) ||
+      textList('postButtonTexts').map((t) => findClickableByText(t, true)).find(Boolean) ||
       null
     );
   }
 
   async function waitForChecksPassAndAssertSafe() {
     assertProductPickerClosed('点击Posting');
-    log('等待"Pemeriksaan"版权/内容检测完成…');
+
+    // 版权/违规检测是唯一一个"配错了也看不出来"的检查——它只在视频真有问题时才触发，
+    // 平时跑一百遍都不会暴露配错。所以没配就必须停下，绝不能当成"检查通过"放行，
+    // 那等于把这道保护静默关掉还让人以为它开着。
+    const violationMarkers = textList('violationMarkers');
+    if (!violationMarkers.length) {
+      throw new Error(
+        '界面文案配置缺失：这个账号没有配置「版权/违规提示」的界面文字，' +
+          '无法确认这条视频是否被TikTok判定违规。为避免把被标记的内容发出去，已停止。' +
+          '请在控制台网页上编辑该账号补上这项文案'
+      );
+    }
+    const checksPassedMarkers = textList('checksPassedMarkers');
+
+    log('等待版权/内容检测完成…');
     const start = Date.now();
     const maxWaitMs = 45000;
     let explicitPassed = false;
     while (Date.now() - start < maxWaitMs) {
       checkForAppCrash();
       const text = document.body.innerText || '';
-      if (text.includes('Masalah hak cipta ditemukan') || text.includes('Pelanggaran terdeteksi') || text.includes('Video tidak dapat diposting')) {
+      if (hasAnyMarker(text, violationMarkers)) {
         throw new Error('检测到版权或内容严重违规，已自动暂停');
       }
-      explicitPassed =
-        text.includes('Tidak ada masalah yang ditemukan') || text.includes('Tidak ditemukan masalah') || text.includes('Pemeriksaan selesai');
+      explicitPassed = hasAnyMarker(text, checksPassedMarkers);
       if (explicitPassed) {
         log('检测到明确的"检查通过"提示 ✅');
         break;
@@ -648,7 +752,12 @@ export function installTkqInPage(config) {
     // 点这个确认框（不管它默认是"确认"还是"取消"），一律交给人工核实。
     await sleep(1500);
     const text = document.body.innerText || '';
-    const prematureCheck = /Pemeriksaan/i.test(text) && getVisibleModalRoots().length > modalsBefore;
+    // 弹窗数量变多是语言无关的结构性信号；文字只是用来降低误判。
+    // 文案没配时退化成"只看弹窗数量"，宁可多报也不漏报——误报的后果只是按
+    // "发布结果不确定"暂停等人确认，是安全方向。
+    const prematureMarkers = textList('prematureCheckMarkers');
+    const modalAppeared = getVisibleModalRoots().length > modalsBefore;
+    const prematureCheck = modalAppeared && (!prematureMarkers.length || hasAnyMarker(text, prematureMarkers));
     if (prematureCheck) {
       log('⚠️ 点击发布后检测到疑似"检查未完成"的确认框，按发布结果不确定处理');
     }
@@ -674,6 +783,10 @@ export function installTkqInPage(config) {
       (c) => isVisible(c) && isEnabled(c) && Boolean(c.querySelector('[data-icon="PlusSquare"], [data-icon="plus-square"], svg'))
     );
     if (iconBtn) return iconBtn;
+    // 下面这条按文字找的分支【故意不做成可配置项】，虽然 'Unggah'/'Upload' 是印尼语/英语。
+    // 它已经是第三道兜底了：前面两道靠 data-tt 属性和图标找，都是语言无关的；
+    // 而且这条自己还带一个 href 含 '/upload' 的判断，同样语言无关。
+    // 为它多加一个用户要填的输入框，收益抵不上让人多理解一项配置的成本。
     const sidebar = document.querySelector('nav, aside, [class*="sidebar"], [class*="Sidebar"]');
     if (sidebar) {
       const candidates = Array.from(sidebar.querySelectorAll('button, a')).filter((el) => isVisible(el) && isEnabled(el));
@@ -707,6 +820,9 @@ export function installTkqInPage(config) {
   window.__tkq = {
     log,
     checkForAppCrash,
+    // 单独暴露出来，是为了让"商品弹窗还开着就不许点发布"这道安全闸门
+    // 能被独立验证——它静默失效时从外部行为上完全看不出来。
+    assertProductPickerClosed,
     isUploadPage,
     isContentPage,
     waitForUploadComplete,

@@ -1,51 +1,101 @@
 {
   "_说明": "复制为 settings.json 后按需修改。这个文件里放的是跨账号共用的默认值，单个账号可以在 accounts.json 里用 textOverrides / hashtagKeywords 覆盖。",
-
   "minIntervalMs": 5400000,
   "maxIntervalMs": 9000000,
   "folderScanIntervalMs": 30000,
   "concurrency": 1,
-
-  "videoExtensions": [".mp4", ".mov", ".avi", ".webm"],
-  "hashtagKeywords": ["fyp", "tiktok", "tiktokshop"],
-
+  "videoExtensions": [
+    ".mp4",
+    ".mov",
+    ".avi",
+    ".webm"
+  ],
+  "hashtagKeywords": [
+    "fyp",
+    "tiktok",
+    "tiktokshop"
+  ],
   "_deleteAfterPublish说明": "确认发布成功后，是否把源视频文件移到回收站。开着的话文件夹本身就是待发布清单：夹子里还有视频=没发完，没了就该加新的。只在真正确认发布成功的那一刻才会移（不确定/失败/暂停都不会动文件）。是移到回收站不是永久删除，误删还能捞回来。",
   "deleteAfterPublish": true,
-
-  "_quota说明": "每个账号每天最多发几条，按印尼时间(WIB默认)算一天的边界，超过就停下等第二天(印尼时间0点)自动刷新额度。dailyPublishLimit填0表示不限制。timezone可选 Asia/Jakarta(WIB印尼西部，雅加达用这个) / Asia/Makassar(WITA印尼中部) / Asia/Jayapura(WIT印尼东部)。",
+  "_quota说明": "每个账号每天最多发几条，按 timezone 指定的时区算一天的边界，超过就停下等第二天当地0点自动刷新额度。dailyPublishLimit 填0表示不限制。timezone 支持任意 IANA 时区（网页上有完整下拉可选），做哪个地区就填哪个地区的时区。",
   "dailyPublishLimit": 4,
   "timezone": "Asia/Jakarta",
-
   "_retry说明": "临时故障(页面超时、指纹浏览器没开、网络抖动)会按这个间隔自动重试，不打扰你；数组有几项就最多重试几次，全用完还不行才暂停并通知。注意：只要有可能已经点过发布按钮，一律不会自动重试，避免同一条发两遍。",
-  "retryBackoffMs": [300000, 900000, 2400000],
-
+  "retryBackoffMs": [
+    300000,
+    900000,
+    2400000
+  ],
   "notifications": {
     "_说明": "账号真正需要你处理时推一条消息。provider 可选 telegram / wecom / bark / webhook，填好对应那一段即可。",
     "enabled": false,
     "provider": "telegram",
-    "telegram": { "botToken": "", "chatId": "" },
-    "wecom": { "webhookUrl": "" },
-    "bark": { "serverUrl": "" },
-    "webhook": { "url": "" }
+    "telegram": {
+      "botToken": "",
+      "chatId": ""
+    },
+    "wecom": {
+      "webhookUrl": ""
+    },
+    "bark": {
+      "serverUrl": ""
+    },
+    "webhook": {
+      "url": ""
+    }
   },
-
+  "_textPreset说明": "全局界面语言。可选 id(印尼语，已验证) / en(英语，安全项需自己补) / custom(什么都不继承，全部自己填)。不填等于 id。整个团队都做同一个语言时改这里最省事；各账号语言不同时在网页上按账号选。",
+  "textPreset": "id",
   "text": {
-    "_说明": "这些是 TikTok Studio 界面文案，跟账号的界面语言绑定（不是账号所在国家，是TikTok Studio实际显示的语言）。原脚本是照着印尼语界面(Bahasa Indonesia)扒下来的；如果某个账号显示的是英文/马来文/菲律宾英文界面，必须在 accounts.json 里用 textOverrides 覆盖，否则会因为文字对不上而找不到按钮。",
+    "_说明": "TikTok Studio 界面文案，跟【TikTok Studio 实际显示的语言】绑定（不是账号所在国家）。这里是【全局默认】，语言由上面的 textPreset 声明，默认 id（印尼语，唯一在真实界面上验证过的一套）。换语言不用改这个文件——在控制台网页上编辑账号，在「TikTok Studio 界面文案」里给那个账号选预设并按自己界面改即可。注意：只有跟全局同语言的账号才会继承这里的值；声明了别的语言的账号【不继承】，否则会把印尼语的字塞进英文界面，看着像配好了其实永远匹配不上。",
     "nextButton": "Berikutnya",
     "searchProductPlaceholder": "Cari produk",
     "publishNowRadioLabel": "Sekarang",
-    "productConfirmButtons": ["Berikutnya", "Tambah", "Tambahkan", "Konfirmasi", "Simpan"],
     "addProductButton": "Tambah",
     "aiDisclosureLabel": "Konten yang dihasilkan AI",
-    "showMoreButtons": ["Tampilkan lebih banyak", "Tampilkan lainnya"],
-    "postButtonTexts": ["Posting", "Post"]
+    "productConfirmButtons": [
+      "Berikutnya",
+      "Tambah",
+      "Tambahkan",
+      "Konfirmasi",
+      "Simpan"
+    ],
+    "showMoreButtons": [
+      "Tampilkan lebih banyak",
+      "Tampilkan lainnya"
+    ],
+    "postButtonTexts": [
+      "Posting",
+      "Post"
+    ],
+    "productModalMarkers": [
+      "Tambah tautan",
+      "Nama produk"
+    ],
+    "appCrashMarkers": [
+      "Ada masalah",
+      "Coba lagi"
+    ],
+    "violationMarkers": [
+      "Masalah hak cipta ditemukan",
+      "Pelanggaran terdeteksi",
+      "Video tidak dapat diposting"
+    ],
+    "checksPassedMarkers": [
+      "Tidak ada masalah yang ditemukan",
+      "Tidak ditemukan masalah",
+      "Pemeriksaan selesai"
+    ],
+    "uploadDoneMarkers": [],
+    "uploadingMarkers": [],
+    "prematureCheckMarkers": [
+      "Pemeriksaan"
+    ]
   },
-
   "adspower": {
     "baseUrl": "http://local.adspower.net:50325",
     "apiKey": ""
   },
-
   "hubstudio": {
     "_说明": "已对照官方文档确认：POST /api/v1/browser/start (打开) 和 /api/v1/browser/stop (关闭)，环境ID字段是containerCode，调试端口在返回值的data.debuggingPort。如果客户端「开发者」页面里的『安全校验』是开启状态，把生成的API Key填到下面的apiKey；关闭状态则不用填。",
     "baseUrl": "http://127.0.0.1:6873",
@@ -55,7 +105,6 @@
     "requestIdField": "containerCode",
     "responseDebugPortField": "debuggingPort"
   },
-
   "bitbrowser": {
     "_说明": "免费版就能用。本地API地址在比特浏览器客户端「系统设置」里能查到，默认一般是 http://127.0.0.1:54345，如果连不上先去客户端核对这个端口。",
     "baseUrl": "http://127.0.0.1:54345"

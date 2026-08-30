@@ -24,6 +24,7 @@
       <h2>账号列表</h2>
       <button id="btn-add-account" class="primary">+ 添加账号</button>
     </div>
+    <div id="accounts-warning" class="error-banner hidden"></div>
     <div id="accounts-empty" style="display:none;">还没有账号，点击右上角"添加账号"开始。</div>
     <div id="accounts-list"></div>
   </section>
@@ -57,11 +58,9 @@
           </div>
           <div class="field">
             <label>时区（算"一天"的边界、算日切换点用）</label>
-            <select id="s-timezone">
-              <option value="Asia/Jakarta">印尼西部 WIB（雅加达，最常用）</option>
-              <option value="Asia/Makassar">印尼中部 WITA</option>
-              <option value="Asia/Jayapura">印尼东部 WIT</option>
-            </select>
+            <!-- 选项由 app.js 的 populateTimezones() 动态生成：常用跨境地区置顶 + 完整IANA列表 -->
+            <select id="s-timezone"></select>
+            <div class="hint">做哪个地区就选哪个地区的时区，额度按当地0点刷新。</div>
           </div>
           <div class="field span2">
             <label><input type="checkbox" id="s-delete-after-publish"> 确认发布成功后，把源视频文件移到回收站</label>
@@ -245,29 +244,36 @@
           <label>话题标签（逗号分隔，会依次点击历史标签里的这些 #标签）</label>
           <input type="text" id="a-hashtags" placeholder="fyp,tiktok,tiktokshop">
         </div>
-        <div class="field span2">
-          <label>TikTok Studio 界面语言</label>
-          <select id="a-locale">
-            <option value="id">印尼语 Bahasa Indonesia（默认）</option>
-            <option value="en">英文 English</option>
-            <option value="custom">自定义…</option>
-          </select>
-          <div class="hint">这个跟"账号显示语言"要对应，不对应会导致找不到按钮而报错暂停（不会误发布）。</div>
-        </div>
       </div>
 
-      <fieldset id="a-custom-text" style="display:none;">
-        <legend>自定义界面文案</legend>
-        <div class="form-grid">
-          <div class="field"><label>"下一步"按钮文字</label><input type="text" id="a-t-next"></div>
-          <div class="field"><label>"立即发布"单选项文字</label><input type="text" id="a-t-now"></div>
-          <div class="field"><label>商品搜索框提示文字</label><input type="text" id="a-t-search"></div>
-          <div class="field"><label>"添加商品"按钮文字</label><input type="text" id="a-t-addproduct"></div>
-          <div class="field"><label>AI声明开关文字</label><input type="text" id="a-t-ai"></div>
-          <div class="field"><label>发布按钮文字（逗号分隔）</label><input type="text" id="a-t-post"></div>
-          <div class="field"><label>商品弹窗确认按钮文字（逗号分隔）</label><input type="text" id="a-t-confirm"></div>
-          <div class="field"><label>"展开更多"按钮文字（逗号分隔）</label><input type="text" id="a-t-more"></div>
+      <fieldset>
+        <legend>TikTok Studio 界面文案（换语言/换地区就靠这里）</legend>
+        <div class="hint" style="margin-bottom:10px;">
+          程序是靠"认界面上的字"来找按钮的，所以这些必须跟你这个账号
+          <b>TikTok Studio 实际显示的语言</b>对上（跟账号在哪个国家没关系）。
+          页面结构本身是全球通用的，所以<b>只要把这些字改对，任何地区都能用</b>。
+          <br>
+          下面显示的是<b>当前实际生效的值</b>，跟你改完保存后真正跑的是同一套。
+          <br>
+          <b>换语言就换预设</b>：预设不是"帮你填一下"，它决定这个账号跟谁共用文案。
+          选了非印尼语的预设，就<b>不会</b>再继承全局那套印尼语文字——否则你会看到一堆
+          印尼文被当成"已配好"，实际在你的界面上永远匹配不上。
+          带<span class="tag" style="background:#fdecea;color:var(--red);">必填</span>的项必须有值才能保存。
         </div>
+
+        <div class="form-grid">
+          <div class="field span2">
+            <label>这个账号的 TikTok Studio 界面是什么语言</label>
+            <div class="row">
+              <select id="a-preset-pick"></select>
+              <button type="button" id="a-preset-load">载入到下面</button>
+            </div>
+            <div class="hint" id="a-preset-hint"></div>
+          </div>
+        </div>
+
+        <!-- 输入框由 app.js 按字段清单动态生成，避免 HTML 和 JS 两边各维护一份键名 -->
+        <div class="form-grid" id="a-text-fields"></div>
       </fieldset>
 
       <div class="modal-actions">

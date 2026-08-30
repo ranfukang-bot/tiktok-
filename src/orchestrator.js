@@ -1,5 +1,14 @@
 import { chromium } from 'playwright-core';
-import { loadSettings, loadAccounts, resolveText, resolveHashtags, resolveDailyLimit, resolveTimezone } from './config.js';
+import {
+  loadSettings,
+  loadAccounts,
+  resolveText,
+  resolveHashtags,
+  resolveDailyLimit,
+  resolveTimezone,
+  findMissingRequiredText,
+  textKeyLabel,
+} from './config.js';
 import { createAdapter } from './browserAdapters/index.js';
 import { createLogger } from './logger.js';
 import { getState, setState, pause, clearFailures } from './stateStore.js';
@@ -94,6 +103,18 @@ async function processAccountOnce(account, settings, adapter, log) {
 
   log.info(`账号到点，开始处理第 ${nextIdx + 1}/${state.items.length} 条: ${item.relativePath}`);
 
+  // 开浏览器之前先自检文案配置。放在 startProfile 之前是有意的：配置不全的话
+  // 没必要先把指纹浏览器窗口拉起来再失败。网页上的保存校验能被绕过(手改
+  // accounts.json、校验上线前就存在的老账号、直接改 settings.json)，这里是最后一道。
+  const missingText = findMissingRequiredText(settings, account);
+  if (missingText.length) {
+    throw new Error(
+      `界面文案配置缺失：这个账号缺少 ${missingText.map(textKeyLabel).join('、')}，` +
+        '其中版权/违规提示、商品弹窗这类是安全判断，缺了不会报错但保护是关着的。' +
+        '请在控制台网页上编辑该账号，把界面文案填完整后再继续'
+    );
+  }
+
   // 一旦置为true，说明这轮已经可能点过发布按钮了，任何后续错误都不许自动重试
   let publishAttempted = false;
 
@@ -142,7 +163,10 @@ async function processAccountOnce(account, settings, adapter, log) {
 
       const dailyLimit = resolveDailyLimit(settings, account);
       if (!hasQuotaRemaining(latest, dailyLimit)) {
-        log.info(`本条发布完成，今天已经发了 ${latest.publishedToday}/${dailyLimit} 条，额度用完，等印尼时间明天再继续`);
+        log.info(
+          `本条发布完成，今天已经发了 ${latest.publishedToday}/${dailyLimit} 条，额度用完，` +
+            `等 ${resolveTimezone(settings, account)} 过完这一天再继续`
+        );
       } else {
         log.info(`本条发布完成，下一条将在约 ${fmtMinutes(latest.nextTime - Date.now())} 分钟后开始`);
       }
@@ -177,9 +201,9 @@ async function tickAccount(settings, account, adapters) {
     const dailyLimit = resolveDailyLimit(settings, account);
     if (rolloverIfNewDay(state, timezone)) {
       setState(account.name, state);
-      log.info(`印尼时间进入新的一天，今日发布额度已刷新`);
+      log.info(`${timezone} 进入新的一天，今日发布额度已刷新`);
     }
-    // 今天的额度用完了，安安静静跳过，不算错误也不用暂停/通知——等印尼时间明天自动恢复
+    // 今天的额度用完了，安安静静跳过，不算错误也不用暂停/通知——按账号自己的时区过了0点自动恢复
     if (!hasQuotaRemaining(state, dailyLimit)) return;
 
     if (!Number.isInteger(state.pendingIndex)) {

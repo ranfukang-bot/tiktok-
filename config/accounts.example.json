@@ -1,28 +1,33 @@
 [
   {
     "_说明": "这是示例文件，里面全是编的假数据。复制成 accounts.json 后填你自己的，或者直接在网页控制台上添加账号（推荐）。accounts.json 已经在 .gitignore 里，不会被提交。",
-    "name": "示例账号A",
+    "name": "示例账号A（印尼语界面）",
     "enabled": true,
     "browser": "bitbrowser",
     "browserId": "请填比特浏览器的环境ID",
     "videoFolder": "D:\\发布视频\\示例账号A",
-    "hashtagKeywords": ["fyp", "tiktok", "tiktokshop"]
+    "hashtagKeywords": [
+      "fyp",
+      "tiktok",
+      "tiktokshop"
+    ]
   },
   {
+    "_说明": "换语言的账号长这样：textPreset 声明界面语言，textOverrides 只写跟预设不一样的项。声明了 en 之后就【不再继承】全局那套印尼语文案，所以预设里留空的安全项必须在这里补上，补不上程序会拒绝保存/拒绝运行。",
     "name": "示例账号B（英文界面）",
     "enabled": true,
     "browser": "bitbrowser",
     "browserId": "请填比特浏览器的环境ID",
     "videoFolder": "D:\\发布视频\\示例账号B",
+    "textPreset": "en",
     "textOverrides": {
-      "nextButton": "Next",
-      "searchProductPlaceholder": "Search product",
-      "publishNowRadioLabel": "Now",
-      "productConfirmButtons": ["Next", "Add", "Confirm", "Save"],
-      "addProductButton": "Add",
-      "aiDisclosureLabel": "AI-generated content",
-      "showMoreButtons": ["Show more"],
-      "postButtonTexts": ["Post"]
+      "_说明": "下面这两项英语预设里是空的——我们没有验证过真实的英文界面，不敢编翻译给你（编错了你会以为版权检测开着，其实它永远匹配不上）。请打开你自己账号的 TikTok Studio，把界面上真实显示的字抄下来替换掉。",
+      "violationMarkers": [
+        "把视频被判版权/违规时页面上显示的提示原样抄这里"
+      ],
+      "productModalMarkers": [
+        "把商品弹窗上每次都会出现的字抄这里，比如弹窗标题"
+      ]
     }
   }
 ]
