@@ -1,0 +1,3 @@
+# 统一用 LF 存储。之前在 Windows 上编辑过的文件被整体改成了 CRLF，
+# 导致 diff 里整个文件都算改动，看不出真正改了什么。
+* text=auto eol=lf

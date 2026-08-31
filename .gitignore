@@ -4,3 +4,7 @@ config/accounts.json
 state/*.json
 !state/.gitkeep
 *.log
+
+# 诊断快照：文件名里就是真实账号名，内容含商品ID和视频文件名。
+# 仓库是公开的，这些绝对不能提交。脚本本身(diagnostics/*.mjs)是可以提交的。
+diagnostics/output/

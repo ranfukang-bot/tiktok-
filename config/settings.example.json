@@ -1,5 +1,5 @@
 {
-  "_说明": "复制为 settings.json 后按需修改。这个文件里放的是跨账号共用的默认值，单个账号可以在 accounts.json 里用 textOverrides / hashtagKeywords 覆盖。",
+  "_说明": "复制为 settings.json 后按需修改。这个文件里放的是跨账号共用的默认值，单个账号可以在 accounts.json 里用 hashtagKeywords 覆盖。",
   "minIntervalMs": 5400000,
   "maxIntervalMs": 9000000,
   "folderScanIntervalMs": 30000,
@@ -44,54 +44,7 @@
       "url": ""
     }
   },
-  "_textPreset说明": "全局界面语言。可选 id(印尼语，已验证) / en(英语，安全项需自己补) / custom(什么都不继承，全部自己填)。不填等于 id。整个团队都做同一个语言时改这里最省事；各账号语言不同时在网页上按账号选。",
-  "textPreset": "id",
-  "text": {
-    "_说明": "TikTok Studio 界面文案，跟【TikTok Studio 实际显示的语言】绑定（不是账号所在国家）。这里是【全局默认】，语言由上面的 textPreset 声明，默认 id（印尼语，唯一在真实界面上验证过的一套）。换语言不用改这个文件——在控制台网页上编辑账号，在「TikTok Studio 界面文案」里给那个账号选预设并按自己界面改即可。注意：只有跟全局同语言的账号才会继承这里的值；声明了别的语言的账号【不继承】，否则会把印尼语的字塞进英文界面，看着像配好了其实永远匹配不上。",
-    "nextButton": "Berikutnya",
-    "searchProductPlaceholder": "Cari produk",
-    "publishNowRadioLabel": "Sekarang",
-    "addProductButton": "Tambah",
-    "aiDisclosureLabel": "Konten yang dihasilkan AI",
-    "productConfirmButtons": [
-      "Berikutnya",
-      "Tambah",
-      "Tambahkan",
-      "Konfirmasi",
-      "Simpan"
-    ],
-    "showMoreButtons": [
-      "Tampilkan lebih banyak",
-      "Tampilkan lainnya"
-    ],
-    "postButtonTexts": [
-      "Posting",
-      "Post"
-    ],
-    "productModalMarkers": [
-      "Tambah tautan",
-      "Nama produk"
-    ],
-    "appCrashMarkers": [
-      "Ada masalah",
-      "Coba lagi"
-    ],
-    "violationMarkers": [
-      "Masalah hak cipta ditemukan",
-      "Pelanggaran terdeteksi",
-      "Video tidak dapat diposting"
-    ],
-    "checksPassedMarkers": [
-      "Tidak ada masalah yang ditemukan",
-      "Tidak ditemukan masalah",
-      "Pemeriksaan selesai"
-    ],
-    "uploadDoneMarkers": [],
-    "uploadingMarkers": [],
-    "prematureCheckMarkers": [
-      "Pemeriksaan"
-    ]
-  },
+  "_dom说明": "各国语言共用DOM识别，无需填写界面翻译。音乐和内容检查必须双绿，未知或超时停止。",
   "adspower": {
     "baseUrl": "http://local.adspower.net:50325",
     "apiKey": ""

@@ -247,33 +247,12 @@
       </div>
 
       <fieldset>
-        <legend>TikTok Studio 界面文案（换语言/换地区就靠这里）</legend>
-        <div class="hint" style="margin-bottom:10px;">
-          程序是靠"认界面上的字"来找按钮的，所以这些必须跟你这个账号
-          <b>TikTok Studio 实际显示的语言</b>对上（跟账号在哪个国家没关系）。
-          页面结构本身是全球通用的，所以<b>只要把这些字改对，任何地区都能用</b>。
-          <br>
-          下面显示的是<b>当前实际生效的值</b>，跟你改完保存后真正跑的是同一套。
-          <br>
-          <b>换语言就换预设</b>：预设不是"帮你填一下"，它决定这个账号跟谁共用文案。
-          选了非印尼语的预设，就<b>不会</b>再继承全局那套印尼语文字——否则你会看到一堆
-          印尼文被当成"已配好"，实际在你的界面上永远匹配不上。
-          带<span class="tag" style="background:#fdecea;color:var(--red);">必填</span>的项必须有值才能保存。
+        <legend>TikTok Studio 通用识别</legend>
+        <div class="hint">
+          自动按页面结构识别上传、商品、AI声明、立即发布和检查结果，<b>无需选择国家或填写界面翻译</b>。
+          只有音乐版权和内容检查两项都明确通过才发布；红色、检查未完成、检查关闭或未知结构都会停止。
+          <br>页面改版或账号缺少商品橱窗等功能时会报错暂停，不会猜按钮、不会跳过检查。
         </div>
-
-        <div class="form-grid">
-          <div class="field span2">
-            <label>这个账号的 TikTok Studio 界面是什么语言</label>
-            <div class="row">
-              <select id="a-preset-pick"></select>
-              <button type="button" id="a-preset-load">载入到下面</button>
-            </div>
-            <div class="hint" id="a-preset-hint"></div>
-          </div>
-        </div>
-
-        <!-- 输入框由 app.js 按字段清单动态生成，避免 HTML 和 JS 两边各维护一份键名 -->
-        <div class="form-grid" id="a-text-fields"></div>
       </fieldset>
 
       <div class="modal-actions">

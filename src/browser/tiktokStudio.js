@@ -77,7 +77,7 @@ async function clearCaptionWithRealKeyboard(page, log) {
   throw new Error('Draft.js没有稳定清空默认标题，已停止，绝不会带商品ID/文件名发布');
 }
 
-async function fillCaption(page, config, log) {
+export async function fillCaption(page, config, log) {
   // 真实鼠标/键盘事件依赖当前页面焦点和视口坐标，先把标签页提到前台
   await page.bringToFront().catch(() => {});
 
@@ -126,9 +126,7 @@ async function isCleanUploadPage(page) {
 // （注：曾经怀疑过这个多余的刷新是"Ada masalah"崩溃的诱因，已被真实A/B实验证伪——
 // 真正的根因是旧的 execCommand 清空标题路径破坏了 Draft.js 状态，见上面 fillCaption
 // 的注释。少刷新这件事本身仍然值得保留，只是跟那个崩溃无关。）
-// 刷新还顺带清掉了 window.__tkq，避免用错误config安装过的旧实例被复用
-// （installTkqInPage 是"装过一次就不再重装"的单例），所以刷新过的分支后面
-// 调用方还是会重新执行一次 installTkqInPage。
+// 每一轮都重新安装页面助手，更新配置并清除上一轮的商品挂载确认记录。
 async function ensureOnUploadPage(page, log) {
   if (await isCleanUploadPage(page)) {
     log.info('页面已经是干净的上传页，不用整页刷新');
@@ -174,9 +172,10 @@ export async function runOneUploadCycle({ page, account, item, config, log, befo
   // 点击发布前先让调用方把 pendingIndex 落盘：点击后页面可能立刻跳转，
   // 后续代码来不及执行；跳没跳转由 Node 端在点击后用 page.waitForURL 判断，
   // 不依赖页面上下文存活。
-  if (beforePublishClick) await beforePublishClick();
-
   await humanDelay();
+  // 延迟后重新检查双绿、AI、立即发布和本轮商品，安全闸门失败时尚未记为发布尝试。
+  await page.evaluate(() => window.__tkq.assertReadyToPublish());
+  if (beforePublishClick) await beforePublishClick();
   log.info('点击最终发布按钮…');
   const clickResult = await page.evaluate(() => window.__tkq.clickPublishButton());
   if (clickResult && clickResult.prematureCheck) {

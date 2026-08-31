@@ -7,7 +7,7 @@ export function installTkqInPage(config) {
   // 这里【故意】没有 `if (window.__tkq) return` 的单例守卫。
   // 那个守卫会把重装时传进来的新config悄悄丢掉，只保留第一次安装时的闭包——
   // 提交 e58da98 就是被它坑过一次(用空config装过之后，真实config再也装不进去)。
-  // 现在文案可以由用户随时在网页上改，守卫会导致"改了配置但页面还用旧的"。
+  // 每轮需更新标签配置并清除上一轮挂车记录，不能保留旧闭包。
   // 重装是安全的：函数体只声明闭包再赋值 window.__tkq，没有事件监听、没有定时器、
   // 不碰DOM，而且Node端的 page.evaluate 是串行的，不会有执行到一半的调用被打断。
 
@@ -24,31 +24,11 @@ export function installTkqInPage(config) {
     return sleep(minMs + Math.random() * (maxMs - minMs));
   }
 
-  // ===== 界面文案（跨语言/跨地区可配置）=====
-  // 真实值由 Node 端 src/config.js 里的 DEFAULT_PAGE_TEXT 合并后传进来。
-  // 这里【不】再复制一份印尼语默认值——那会变成第三处真值来源(config.js / app.js / 这里)，
-  // 迟早漂移。这里只负责"取不到时安全降级"。
+  // 文案只保留为错误页的可选诊断信号，不参与定位或发布放行。
   const pageText = (config && config.text) || {};
-
-  // 取"任一命中即可"的文案列表。保持原数组顺序：productConfirmButtons /
-  // postButtonTexts / showMoreButtons 是按优先级排的，第一个匹配上的胜出，顺序不能乱。
   function textList(key) {
     const v = pageText[key];
-    if (Array.isArray(v)) return v.filter((s) => typeof s === 'string' && s.trim());
-    return typeof v === 'string' && v.trim() ? [v] : [];
-  }
-
-  // 取必填的单条文案。空值绝对不能放行：includes('') 恒为 true，
-  // findClickableByText('') 会匹配到页面上随便一个空元素然后点下去。
-  function requiredText(key, what) {
-    const v = pageText[key];
-    if (typeof v !== 'string' || !v.trim()) {
-      throw new Error(
-        `界面文案配置缺失：这个账号没有配置「${what}」对应的界面文字，无法安全定位元素。` +
-          '请在控制台网页上编辑该账号，把界面文案填完整'
-      );
-    }
-    return v;
+    return (Array.isArray(v) ? v : [v]).filter((x) => typeof x === 'string' && x.trim());
   }
 
   // 页面文字匹配的统一入口：折叠空白 + 忽略大小写。
@@ -58,11 +38,7 @@ export function installTkqInPage(config) {
     return String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   }
 
-  function hasAnyMarker(haystack, markers) {
-    if (!markers.length) return false;
-    const h = normText(haystack);
-    return markers.some((m) => h.includes(normText(m)));
-  }
+
 
   function hasAllMarkers(haystack, markers) {
     // 空列表必须返回 false。[].every() 恒为 true，会让崩溃检测在每一轮的
@@ -72,143 +48,80 @@ export function installTkqInPage(config) {
     return markers.every((m) => h.includes(normText(m)));
   }
 
+  // 不要求在视口内（页面下方的检查也要读），但排除隐藏分支及隐藏祖先。
   function isVisible(el) {
-    if (!el) return false;
+    if (!el || !el.isConnected) return false;
     const rect = el.getBoundingClientRect();
-    const style = window.getComputedStyle(el);
-    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-  }
-
-  function isEnabled(el) {
-    if (!el) return false;
-    if (el.disabled) return false;
-    if (el.getAttribute('aria-disabled') === 'true') return false;
-    if (window.getComputedStyle(el).pointerEvents === 'none') return false;
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    for (let node = el; node && node !== document; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (node.hidden || node.getAttribute('data-show') === 'false' ||
+          style.display === 'none' || style.visibility === 'hidden' ||
+          style.visibility === 'collapse' || Number(style.opacity) === 0) return false;
+    }
     return true;
   }
 
-  function findByText(tag, text, exact = false) {
-    const nodes = Array.from(document.querySelectorAll(tag));
-    return nodes.find((el) => {
-      const t = (el.textContent || '').trim();
-      if (!isVisible(el)) return false;
-      return exact ? t === text : t.includes(text);
-    });
+  function isEnabled(el) {
+    return Boolean(el && !el.disabled && !el.matches(':disabled') &&
+      !el.closest('[aria-disabled="true"], [data-disabled="true"], [inert]') &&
+      getComputedStyle(el).pointerEvents !== 'none');
   }
 
-  function findClickableByText(text, exact = false) {
-    const candidates = ['button', 'div', 'span', 'a', 'label'];
-    for (const tag of candidates) {
-      const el = findByText(tag, text, exact);
-      if (el) {
-        const btnAncestor = el.closest('button');
-        return btnAncestor || el;
-      }
-    }
-    return null;
+  function uniqueVisible(root, selector, what) {
+    const nodes = Array.from((root || document).querySelectorAll(selector)).filter(isVisible);
+    if (nodes.length > 1) throw new Error(`页面结构不受支持：${what}有多个匹配，已停止以避免误点击`);
+    return nodes[0] || null;
   }
 
-  function findActionByTextsWithin(root, texts) {
-    if (!root) return null;
-    const candidates = Array.from(root.querySelectorAll('button, [role="button"]'));
-    for (const text of texts) {
-      const match = candidates.find((el) => isVisible(el) && isEnabled(el) && (el.textContent || '').trim() === text);
-      if (match) return match;
-    }
-    return null;
-  }
-
-  function getModalRoot(el) {
-    if (!el) return null;
-    const modalSelector = [
-      '[role="dialog"]',
-      '[aria-modal="true"]',
-      '.TUXModal',
-      '[class*="TUXModal"]',
-      '[class*="modal-content"]',
-      '[class*="ModalContent"]',
-      '[class*="modal-container"]',
-      '[class*="ModalContainer"]',
-    ].join(',');
-
-    let semanticRoot = null;
-    for (let node = el; node && node !== document.body; node = node.parentElement) {
-      if (node.matches(modalSelector)) semanticRoot = node;
-    }
-    if (semanticRoot) return semanticRoot;
-
-    let fixedRoot = null;
-    for (let node = el; node && node !== document.body; node = node.parentElement) {
-      if (window.getComputedStyle(node).position === 'fixed') fixedRoot = node;
-    }
-    return fixedRoot || document.body;
-  }
-
+  const MODAL_SELECTOR = '[role="dialog"], [aria-modal="true"], .TUXModal, .common-modal, [class*="modal-container"], [class*="ModalContainer"]';
   function getVisibleModalRoots() {
-    const selector = [
-      '[role="dialog"]',
-      '[aria-modal="true"]',
-      '.TUXModal',
-      '[class*="TUXModal"]',
-      '[class*="modal-container"]',
-      '[class*="ModalContainer"]',
-    ].join(',');
-    const roots = [];
-    for (const candidate of document.querySelectorAll(selector)) {
-      if (!isVisible(candidate)) continue;
-      const root = getModalRoot(candidate);
-      if (root && root !== document.body && isVisible(root) && !roots.includes(root)) roots.push(root);
-    }
-    return roots;
+    const nodes = Array.from(document.querySelectorAll(MODAL_SELECTOR)).filter(isVisible);
+    // 外层遮罩和内层 dialog 算同一个弹窗，只保留最内层的语义容器。
+    return nodes.filter((el) => !nodes.some((other) => other !== el && el.contains(other)));
   }
 
-  function isProductWorkflowModal(root) {
-    if (!root || !isVisible(root)) return false;
-
-    // 用JS扫 placeholder，不再把用户填的文字拼进CSS属性选择器。
-    // 用户会在这里填各种语言的任意文本，含引号或反斜杠时 querySelector 直接抛
-    // SyntaxError；而且 [placeholder*=""] 在CSS里是"匹配不到任何元素"，
-    // 空值时会静默让这半边检测失效。
-    const placeholder = pageText.searchProductPlaceholder;
-    if (typeof placeholder === 'string' && placeholder.trim()) {
-      const hit = Array.from(root.querySelectorAll('input')).some((input) =>
-        normText(input.getAttribute('placeholder')).includes(normText(placeholder))
-      );
-      if (hit) return true;
-    }
-
-    const text = root.innerText || root.textContent || '';
-    return hasAnyMarker(text, textList('productModalMarkers'));
-  }
-
-  function getTopProductWorkflowModal() {
-    return getVisibleModalRoots().filter(isProductWorkflowModal).pop() || null;
-  }
-
-  function hasOpenProductWorkflowModal() {
-    return Boolean(getTopProductWorkflowModal());
-  }
-
-  function hasAttachedProduct() {
-    return Array.from(document.querySelectorAll('.anchor-container .content-anchor-label')).some(isVisible);
+  function getTopModal() {
+    return getVisibleModalRoots().filter((el) => !el.classList.contains('no-mask-modal')).pop() || null;
   }
 
   function assertProductPickerClosed(nextAction) {
-    // 这道闸门是靠"认弹窗上的字"实现的，两项文案都没配的话 isProductWorkflowModal
-    // 会恒为 false —— 弹窗明明盖在上面，检查却说"没开着"，然后照样去点发布。
-    // 这属于静默失效，必须停下来而不是放行。
-    const placeholder = pageText.searchProductPlaceholder;
-    const hasPlaceholder = typeof placeholder === 'string' && Boolean(placeholder.trim());
-    if (!hasPlaceholder && !textList('productModalMarkers').length) {
-      throw new Error(
-        '界面文案配置缺失：这个账号没有配置「商品搜索框提示文字」和「商品弹窗里必然出现的字」，' +
-          '无法判断商品弹窗是不是还开着。弹窗盖着时继续点击会误点到后面的页面，已停止。' +
-          '请在控制台网页上编辑该账号补上这两项文案'
-      );
+    // 不认弹窗里的字：任何可见弹窗都拦截，未知弹窗也不能隔着它点发布。
+    if (getVisibleModalRoots().length) {
+      throw new Error(`页面弹窗仍然打开，禁止继续${nextAction}，避免后台误点击`);
     }
-    if (hasOpenProductWorkflowModal()) {
-      throw new Error(`商品流程弹窗仍然打开，禁止继续${nextAction}，避免后台误点击`);
-    }
+  }
+
+  function attachedProductLabel() {
+    return uniqueVisible(document, '.anchor-container .content-anchor-label', '商品锚点');
+  }
+
+  let attachedProduct = null;
+
+  function getWorkflowStage(root) {
+    if (!root) return null;
+    if (root.matches('.product-selector-modal') || root.querySelector('.product-selector-container')) return 'select';
+    if (root.querySelector('.anchor-modal')) return 'type';
+    if (root.querySelector('.common-modal-body .TUXFormField-wordCount') &&
+        root.querySelectorAll('.common-modal-body input[type="text"]').length === 1 &&
+        root.querySelector('.common-modal-footer')) return 'name';
+    return null;
+  }
+
+  function getWorkflowAction(root, stage) {
+    if (getWorkflowStage(root) !== stage) return null;
+    const scope = root.querySelector(stage === 'type' ? '.anchor-modal .button-group' : '.common-modal-footer');
+    if (!scope) return null;
+    const btn = uniqueVisible(scope,
+      'button.TUXButton--primary, button[data-type="primary"], button.Button__root--type-primary', '商品确认按钮');
+    return btn && isEnabled(btn) ? btn : null;
+  }
+
+  function switchIsOn(input) {
+    if (!input || !input.checked) return false;
+    const wrapper = input.closest('[data-state]');
+    return input.getAttribute('aria-checked') !== 'false' &&
+      (!wrapper || wrapper.getAttribute('data-state') !== 'unchecked');
   }
 
   function checkForAppCrash() {
@@ -365,57 +278,44 @@ export function installTkqInPage(config) {
     return false;
   }
 
+  function getUploadState() {
+    const container = uniqueVisible(document, '[data-e2e="upload_status_container"]', '上传状态容器');
+    if (!container) return { state: 'unknown' };
+    const progress = container.querySelector('.info-progress');
+    const status = container.querySelector('.info-status');
+    // 初始进度条会 visibility:hidden，不能把“没看到进度条”当作完成。
+    const states = [progress, status].filter(Boolean);
+    if (states.some((el) => el.classList.contains('error') || el.classList.contains('danger'))) {
+      return { state: 'error' };
+    }
+    if (progress && status && states.every((el) => el.classList.contains('success'))) {
+      return { state: 'success', progress: progress.style.width };
+    }
+    return { state: 'uploading', progress: progress?.style.width || '' };
+  }
+
   async function waitForUploadComplete(filename) {
-    const expectedDefaultCaption = filename.replace(/\.[^.]+$/, '').trim();
-    const productId = expectedDefaultCaption.replace(/\s*\(\d+\)$/, '');
-    let stableText = '';
+    const expected = String(filename || '').replace(/\.[^.]+$/, '').trim();
+    let stableText = null;
     let stableSince = 0;
-    log('等待视频上传并等待TikTok填入默认标题…');
+    log('等待上传完成状态和默认标题稳定（DOM识别，无需语言配置）…');
     await waitFor(() => {
-      const text = document.body.innerText || '';
+      const upload = getUploadState();
+      if (upload.state === 'error') throw new Error('视频上传失败，已停止后续操作');
       const editable = getCaptionEditable();
       const caption = getCaptionText(editable);
-
-      // 这两条印尼语/英语正则【故意保留写死】，不改成可配置的纯文字：
-      // 它们带着 "Diunggah(" 的括号锚点和 "Tersisa 30 detik" 的数字+单位锚点，
-      // 换成普通子串会明显变松——"Diunggah"单独作为过去分词出现在别处就会被误判成
-      // 上传完成，而"Mengunggah"出现在区块标题里会让"还在上传"永久卡住变成3分钟超时。
-      // 用户配置的 marker 是【叠加】在这两条之上的(或的关系)，所以印尼语路径跟改动前
-      // 完全一致，其它语言再补自己的词即可。
-      const isExplicitDone =
-        /Diunggah\s*\(|Uploaded\s*\(|Selesai/i.test(text) || hasAnyMarker(text, textList('uploadDoneMarkers'));
-      const isUploading =
-        /Tersisa\s*\d+\s*(?:detik|menit|s|m)|(?:Uploading|Mengunggah)\s*\(\d+%\)/i.test(text) ||
-        hasAnyMarker(text, textList('uploadingMarkers'));
-      const hasVideoPreview = Boolean(
-        document.querySelector('video') ||
-          document.querySelector('[data-e2e="video_preview"]') ||
-          document.querySelector('.preview-container') ||
-          document.querySelector('.player-container')
-      );
-      const isExpectedDefault = caption && (caption.includes(expectedDefaultCaption) || caption.includes(productId));
-
-      if (isUploading && !isExplicitDone) {
-        stableText = '';
-        stableSince = 0;
-        return null;
-      }
-      if (!editable || (!isExpectedDefault && !hasVideoPreview && !isExplicitDone)) {
-        stableText = '';
+      if (upload.state !== 'success' || !editable || !expected || caption !== expected) {
+        stableText = null;
         stableSince = 0;
         return null;
       }
       if (caption !== stableText) {
         stableText = caption;
         stableSince = Date.now();
-        return null;
       }
-      // stableSince 初值是0，必须显式排除：否则文案为空时 caption !== stableText 为false，
-      // 直接落到下面这行，Date.now() - 0 >= 1000 恒为true，"稳定1秒"这个要求等于没有，
-      // 视频还在传就可能被判定成就绪。
-      return stableSince && Date.now() - stableSince >= 1000 ? editable : null;
+      return Date.now() - stableSince >= 1200;
     }, 3 * 60 * 1000, 200);
-    log(`视频和默认标题均已就绪 ✅（待清空：${stableText.slice(0, 80)}）`);
+    log('视频上传完成且默认标题已稳定 ✅');
   }
 
   // ===== 文案/话题标签：只走"点历史标签面板里的chip"这一条路径。=====
@@ -473,294 +373,270 @@ export function installTkqInPage(config) {
     return finalCaption;
   }
 
-  // ===== 商品挂车 =====
+  // ===== 商品挂车：限定流程、限定容器，不根据按钮文字猜下一步 =====
   async function addProductLink(productId) {
+    productId = String(productId || '').trim();
+    if (!/^\d+$/.test(productId)) throw new Error('商品ID必须是数字字符串，已停止挂车');
+    assertProductPickerClosed('添加商品');
+    if (attachedProductLabel()) throw new Error('编辑页已有商品锚点，已停止以避免挂错商品');
+    attachedProduct = null;
     log('开始添加商品链接: ' + productId);
-    const addBtn = await waitFor(() => findClickableByText(requiredText('addProductButton', '添加商品按钮'), true), 20000);
+    const addBtn = await waitFor(() => {
+      const scope = uniqueVisible(document, '.anchor-tag-container', '添加链接区域');
+      const btn = scope && uniqueVisible(scope, 'button', '添加商品按钮');
+      return btn && btn.querySelector('[data-icon="Plus"]') && isEnabled(btn) ? btn : null;
+    }, 20000);
     fireClick(addBtn);
 
-    const nextBtn1 = await waitFor(() => {
-      const globalBtn = findClickableByText(requiredText('nextButton', '下一步按钮'), true);
-      if (!globalBtn) return null;
-      const dialog = getModalRoot(globalBtn);
-      return findActionByTextsWithin(dialog, [requiredText('nextButton', '下一步按钮')]);
+    const typeModal = await waitFor(() => {
+      const modal = getTopModal();
+      return getWorkflowStage(modal) === 'type' ? modal : null;
     });
-    fireClick(nextBtn1);
+    // 在菲律宾和印尼实际观察到的 Products 链接类型枚举是 33。
+    // 其它链接类型不能盲目点下一步，避免误挂非商品链接。
+    const type = uniqueVisible(typeModal, '.anchor-modal [role="combobox"]', '商品链接类型');
+    if (!type || type.getAttribute('aria-label') !== '33') {
+      throw new Error('页面结构不受支持：链接类型不是已验证的商品类型33，请人工核对');
+    }
+    fireClick(await waitFor(() => getWorkflowAction(getTopModal(), 'type')));
 
-    await sleep(500);
-    const searchInput = await waitFor(() =>
-      Array.from(document.querySelectorAll('input')).find(
-        (input) => isVisible(input) && (input.getAttribute('placeholder') || '').includes(requiredText('searchProductPlaceholder', '商品搜索框提示文字'))
-      )
-    );
-    const productDialog = getModalRoot(searchInput);
+    const productDialog = await waitFor(() => {
+      const modal = getTopModal();
+      return getWorkflowStage(modal) === 'select' ? modal : null;
+    });
+    const searchInput = await waitFor(() => {
+      if (productDialog.querySelector('.product-empty-container')) {
+        throw new Error('商品橱窗为空，请先在TikTok App添加橱窗商品');
+      }
+      return uniqueVisible(productDialog, '.product-search-input input[type="text"]', '商品搜索框');
+    }, 20000);
     const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
     nativeSetter.call(searchInput, productId);
     searchInput.dispatchEvent(new Event('input', { bubbles: true }));
-
-    const searchIcon = await waitFor(
-      () => productDialog.querySelector('.product-search-icon') || searchInput.parentElement.querySelector('svg')?.closest('div')
-    );
+    const searchIcon = await waitFor(() => uniqueVisible(productDialog, '.product-search-icon', '商品搜索按钮'));
     fireClick(searchIcon);
 
     const findProductRow = () => {
-      const rows = Array.from(productDialog.querySelectorAll('tr, [role="row"]')).filter(isVisible);
-      return rows.find((r) => {
-        const leafCells = Array.from(r.querySelectorAll('*')).filter((el) => el.children.length === 0);
-        return leafCells.some((cell) => (cell.textContent || '').trim() === productId.trim());
-      });
+      const rows = Array.from(productDialog.querySelectorAll('.product-table tbody tr, .product-table [role="row"]'))
+        .filter(isVisible).filter((row) =>
+          Array.from(row.querySelectorAll('.product-tb-cell')).some((cell) => cell.textContent.trim() === productId));
+      if (rows.length > 1) throw new Error('页面结构不受支持：同一商品ID匹配多行');
+      return rows[0] || null;
     };
-    let row = await waitFor(findProductRow, 10000);
-    let radio = row.querySelector('input[type="radio"].TUXRadioStandalone-input') || row.querySelector('input[type="radio"]');
-    if (!radio) throw new Error('找到了商品行但没找到单选框，需要人工检查页面结构');
-
-    const isSelected = () => {
-      row = findProductRow();
-      if (!row) return false;
-      radio = row.querySelector('input[type="radio"].TUXRadioStandalone-input') || row.querySelector('input[type="radio"]');
-      if (!radio) return false;
-      return (
-        radio.checked ||
-        radio.getAttribute('aria-checked') === 'true' ||
-        row.getAttribute('aria-selected') === 'true' ||
-        Boolean(radio.closest('[aria-checked="true"], [data-state="checked"]'))
-      );
-    };
-
-    const explicitLabel = radio.id ? Array.from(productDialog.querySelectorAll('label')).find((l) => l.htmlFor === radio.id) : null;
-    const radioClickTarget = explicitLabel || radio.closest('label') || radio.closest('[role="radio"]') || radio.parentElement || radio;
-    fireClick(radioClickTarget);
-
-    let selectionConfirmed = await waitForOrNull(() => isSelected() || null, 3000, 100);
-    if (!selectionConfirmed && radioClickTarget !== radio) {
-      log('商品单选框第一次点击未生效，尝试点击radio本体');
-      fireClick(radio);
-      selectionConfirmed = await waitForOrNull(() => isSelected() || null, 3000, 100);
+    const row = await waitForOrNull(findProductRow, 20000);
+    if (!row) throw new Error(`未找到精确商品ID ${productId}，请核对该账号橱窗`);
+    const radio = row.querySelector('input[type="radio"]');
+    const productName = row.querySelector('.product-name')?.textContent.trim();
+    if (!radio || !isEnabled(radio) || !productName) {
+      throw new Error('页面结构不受支持：商品行缺少可用单选框或商品名称');
     }
-    if (!selectionConfirmed) {
+    fireClick(radio);
+    if (!await waitForOrNull(() => findProductRow()?.querySelector('input[type="radio"]')?.checked, 3000, 100)) {
       throw new Error(`商品 ${productId} 已搜到，但单选框没有真正选中，已停止后续发布`);
     }
-    log('商品已选中，等待最终确认按钮可用');
+    log('已按精确ID选中商品，进入名称确认');
+    fireClick(await waitFor(() => getWorkflowAction(getTopModal(), 'select'), 15000));
 
-    let dialogClosed = false;
-    for (let step = 1; step <= 4; step++) {
-      const activeModal = await waitFor(getTopProductWorkflowModal, 10000, 150);
-      const actionBtn = await waitFor(() => findActionByTextsWithin(activeModal, textList('productConfirmButtons')), 10000, 150);
-      const actionRoot = getModalRoot(actionBtn);
-      const actionText = (actionBtn.textContent || '').trim();
-      log(`点击商品弹窗操作按钮(${step}/4): ${actionText}`);
-      fireClick(actionBtn);
-
-      const outcome = await waitForOrNull(() => {
-        if (!hasOpenProductWorkflowModal() && hasAttachedProduct()) return 'closed';
-        const rootClosed = actionRoot !== document.body && (!actionRoot.isConnected || !isVisible(actionRoot));
-        const actionReplaced = !actionBtn.isConnected || !isVisible(actionBtn);
-        const nextModal = getTopProductWorkflowModal();
-        if ((rootClosed || actionReplaced) && nextModal) return 'advanced';
-        if (nextModal && nextModal !== actionRoot) return 'advanced';
-        return null;
-      }, 8000, 150);
-
-      if (outcome === 'closed') {
-        dialogClosed = true;
-        break;
-      }
-      if (outcome !== 'advanced') {
-        throw new Error(`商品弹窗按钮"${actionText}"点击后页面没有变化，已停止后续发布`);
-      }
-      log('商品弹窗已进入下一步，继续查找最终确认按钮');
-      await sleep(400);
+    const nameModal = await waitFor(() => {
+      const modal = getTopModal();
+      return getWorkflowStage(modal) === 'name' ? modal : null;
+    }, 20000);
+    const nameInput = nameModal.querySelector('.common-modal-body input[type="text"]');
+    const anchorName = nameInput.value.trim();
+    // TikTok会把商品名称截断；确认它确实来自刚选中的商品，不能确认其它弹窗。
+    if (!anchorName || !productName.startsWith(anchorName) || nameInput.getAttribute('aria-invalid') === 'true') {
+      throw new Error('商品确认名称与所选商品不一致，已停止挂车');
     }
+    fireClick(await waitFor(() => getWorkflowAction(getTopModal(), 'name'), 10000));
+    await waitFor(() => {
+      if (getVisibleModalRoots().length) return false;
+      return attachedProductLabel()?.textContent.trim() === anchorName;
+    }, 15000, 150);
+    attachedProduct = { productId, anchorName };
+    log('商品链接添加完成并已核对锚点: ' + productId);
+    return { ...attachedProduct };
+  }
 
-    if (!dialogClosed) {
-      dialogClosed = Boolean(
-        await waitForOrNull(() => !hasOpenProductWorkflowModal() && hasAttachedProduct(), 5000, 150)
-      );
-    }
-    if (!dialogClosed) {
-      throw new Error('商品弹窗经过最多4步仍未关闭，或页面没有出现商品锚点；挂车未确认，已停止后续发布');
-    }
-    log('商品链接添加完成: ' + productId);
+  // ===== 发布时间 / AI声明 =====
+  function getNowRadio() {
+    return uniqueVisible(document,
+      '[data-e2e="schedule_container"] input[type="radio"][name="postSchedule"][value="post_now"]', '立即发布单选框');
   }
 
   async function setPublishNow() {
     assertProductPickerClosed('设置立即发布');
-    const radio = await waitFor(() => findClickableByText(requiredText('publishNowRadioLabel', '立即发布选项')));
-    fireClick(radio);
-    await sleep(300);
-    const input = radio.closest('div')?.querySelector('input[type="radio"]');
-    if (input && !input.checked) {
-      log('⚠️ "立即发布"看起来没有被选中，尝试直接点击radio本体');
-      fireClick(input);
-    }
+    const radio = await waitFor(getNowRadio);
+    if (!isEnabled(radio)) throw new Error('立即发布单选框不可用，已停止');
+    if (!radio.checked) fireClick(radio);
+    await waitFor(() => {
+      const current = getNowRadio();
+      return current?.checked && current.getAttribute('aria-checked') !== 'false';
+    }, 3000, 100);
+    log('已确认立即发布（post_now）');
+  }
+
+  function getAiSwitch() {
+    const container = uniqueVisible(document, '[data-e2e="aigc_container"]', 'AI声明区域');
+    return container?.querySelector('input[role="switch"][type="checkbox"]') || null;
   }
 
   async function setAiDisclosure() {
     assertProductPickerClosed('设置AI声明');
-
-    // 之前靠 isVisible(label) 判断"要不要点展开"不可靠：折叠区域用的是
-    // max-height:0 + overflow:hidden 之类的CSS折叠，被折叠起来的元素自己的
-    // getBoundingClientRect 未必是0（裁剪是父级视觉层面的事，不影响子元素的
-    // 布局盒模型），导致isVisible()误判成"已经可见"，从而跳过了点击"展开更多"
-    // 这一步——这正是"连展开都没展开"的根因。改成直接看容器class里有没有
-    // "collapsed"，这是抓到的真实DOM给出的明确信号，比猜可见性靠谱。
-    const getAdvancedContainer = () => document.querySelector('[data-e2e="advanced_settings_container"]');
-    const isCollapsed = () => {
-      const container = getAdvancedContainer();
-      return Boolean(container && container.classList.contains('collapsed'));
-    };
-
-    if (isCollapsed()) {
-      const expandTrigger = await waitForOrNull(() => {
-        const container = getAdvancedContainer();
-        const btn = container ? container.querySelector('.more-btn') : null;
-        if (btn) return btn;
-        for (const t of textList('showMoreButtons')) {
-          const b = findClickableByText(t, false);
-          if (b) return b;
+    const advanced = await waitFor(() => uniqueVisible(document,
+      '[data-e2e="advanced_settings_container"]', '高级设置展开区域'));
+    if (advanced.classList.contains('collapsed')) {
+      const trigger = uniqueVisible(advanced, '.more-btn', '展开更多按钮');
+      if (!trigger) throw new Error('页面结构不受支持：缺少高级设置展开按钮');
+      fireClick(trigger);
+      await waitFor(() => {
+        const current = document.querySelector('[data-e2e="advanced_settings_container"]');
+        return current && !current.classList.contains('collapsed');
+      }, 5000, 100);
+    }
+    const input = await waitFor(getAiSwitch);
+    if (!switchIsOn(input)) {
+      if (!isEnabled(input)) throw new Error('AI声明开关不可用，已停止');
+      fireClick(input);
+      const outcome = await waitFor(() => switchIsOn(getAiSwitch()) ? 'on' : getTopModal(), 5000, 100);
+      if (outcome !== 'on') {
+        // 菲律宾首次开启时的实际DOM：一个说明标题、三条modal-bullet、底部两按钮。
+        // 只接受由本次AI开关操作触发的新弹窗；不是通用的“碰到主按钮就确认”。
+        const modal = outcome;
+        const footer = modal.querySelector('.common-modal-footer');
+        const buttons = footer ? Array.from(footer.querySelectorAll('button')).filter(isVisible) : [];
+        const confirm = footer && uniqueVisible(footer, 'button[data-type="primary"]', 'AI确认按钮');
+        if (getVisibleModalRoots().length !== 1 || !modal.querySelector('.modal-content h2') ||
+            modal.querySelectorAll('.modal-content .modal-bullet').length !== 3 ||
+            modal.querySelector('input') || buttons.length !== 2 ||
+            !buttons.some((btn) => btn.getAttribute('data-type') === 'neutral') ||
+            !confirm || !isEnabled(confirm)) {
+          throw new Error('页面结构不受支持：AI开关触发了未知确认弹窗，未自动确认');
         }
-        return null;
-      }, 5000);
-      if (!expandTrigger) {
-        throw new Error('设置AI声明：高级设置区域是折叠状态，但没找到"展开更多"按钮，需要人工检查页面结构');
+        fireClick(confirm);
+        await waitFor(() => !getVisibleModalRoots().length, 5000, 100);
       }
-      fireClick(expandTrigger);
-      const expanded = await waitForOrNull(() => (!isCollapsed() ? true : null), 3000, 100);
-      if (!expanded) {
-        throw new Error('设置AI声明：点击"展开更多"后高级设置区域没有展开，需要人工检查页面结构');
-      }
-      log('已展开高级设置区域');
-      await sleep(300);
+      await waitFor(() => switchIsOn(getAiSwitch()), 5000, 100);
     }
+    log('已确认AI声明开启（aigc_container）');
+  }
 
-    const findAiLabel = () => findByText('span', requiredText('aiDisclosureLabel', 'AI声明开关')) ||
-      findByText('div', requiredText('aiDisclosureLabel', 'AI声明开关'));
+  // ===== 发布前双绿闸门 =====
+  function getCheckRoots() {
+    const musicControl = uniqueVisible(document, '[data-e2e="copyright_container"]', '音乐检查');
+    const music = musicControl?.closest('.copyright-check') || null;
+    const container = music?.parentElement;
+    const divider = container?.querySelector(':scope > .content-check__divider');
+    const content = divider?.nextElementSibling || null;
+    // 只从已观察到的检查区域取状态，HD提示和视频预览也有status-wrapper，不能全局数绿字。
+    return { music, content: content?.querySelector('.status-wrapper') ? content : null };
+  }
 
-    // 实际抓到的DOM结构里，role="switch"的是那个隐藏的<input>，跟可见的thumb是
-    // 兄弟节点（都在同一个 Switch__content 容器下），不是thumb的祖先节点，
-    // 用 thumb.closest('[role="switch"]') 永远找不到，只会退化到点thumb的父级容器，
-    // 而那个容器不一定绑了真正的点击事件——这就是之前"点了但没生效"的原因。
-    const found = await waitFor(() => {
-      const currentLabel = findAiLabel();
-      if (!currentLabel) return null;
-      const row = currentLabel.closest('div');
-      if (!row) return null;
-      const checkbox = row.querySelector('input[role="switch"], input[type="checkbox"]');
-      const wrapper = checkbox ? checkbox.closest('[data-state]') : null;
-      const thumb = row.querySelector('[data-part="thumb"]');
-      return checkbox || thumb ? { checkbox, wrapper, thumb } : null;
-    }, 10000);
-
-    const isChecked = () => {
-      if (found.checkbox) return found.checkbox.checked || found.checkbox.getAttribute('aria-checked') === 'true';
-      if (found.wrapper) return found.wrapper.getAttribute('data-state') === 'checked' || found.wrapper.getAttribute('aria-checked') === 'true';
-      return found.thumb && found.thumb.getAttribute('data-state') === 'checked';
-    };
-
-    if (isChecked()) {
-      log('AI声明开关已经是打开状态，跳过');
-      return;
+  function readCheck(root, name) {
+    if (!root || !isVisible(root)) return { name, state: 'missing', text: '' };
+    const input = root.querySelector('input[role="switch"]');
+    if (!switchIsOn(input)) return { name, state: 'disabled', text: '' };
+    const active = Array.from(root.querySelectorAll('.status-result')).filter(isVisible);
+    const result = active[0];
+    const text = active.map((el) => el.innerText.trim()).join(' | ').slice(0, 350);
+    const flags = active.map((el) => ({
+      el,
+      danger: Boolean(el.querySelector('[style*="--ui-text-danger"], [color*="--ui-text-danger"]')),
+      warning: Boolean(el.querySelector('[style*="--ui-text-warning"], [color*="--ui-text-warning"]')),
+    }));
+    if (flags.some(({ el, danger, warning }) =>
+      danger || warning || el.matches('.status-warn, .status-error'))) return { name, state: 'blocked', text };
+    if (active.length !== 1) return { name, state: 'unknown', text };
+    if (result.matches('.status-checking') || result.querySelector('.spinning')) {
+      return { name, state: 'checking', text };
     }
-
-    // 优先直接点隐藏的checkbox本体（真正承载开关状态和事件的元素），
-    // 不行再退一步点它外层带 data-state 的可视容器。
-    const primaryTarget = found.checkbox || found.wrapper || found.thumb.parentElement;
-    fireClick(primaryTarget);
-    let toggled = await waitForOrNull(() => isChecked() || null, 2500, 100);
-
-    if (!toggled && found.checkbox && found.wrapper && primaryTarget !== found.wrapper) {
-      log('直接点击开关本体未生效，尝试点击外层容器');
-      fireClick(found.wrapper);
-      toggled = await waitForOrNull(() => isChecked() || null, 2500, 100);
+    if (result.matches('.status-success') && result.querySelector('.status-tip[style*="--ui-text-success"]')) {
+      return { name, state: 'success', text };
     }
+    return { name, state: result.matches('.status-ready') ? 'ready' : 'unknown', text };
+  }
 
-    if (!toggled) {
-      throw new Error('AI声明开关点击后没有变成打开状态，已停止后续发布，需要人工检查页面结构（开关的DOM结构可能又变了）');
-    }
-    log('AI声明开关已打开');
+  function getChecksState() {
+    const roots = getCheckRoots();
+    const checks = [readCheck(roots.music, 'music'), readCheck(roots.content, 'content')];
+    return { passed: checks.every((check) => check.state === 'success'), checks };
+  }
+
+  function checkSummary(state) {
+    return state.checks.map((check) => `${check.name}=${check.state}${check.text ? ': ' + check.text : ''}`).join('；');
+  }
+
+  function assertChecksPassed() {
+    const state = getChecksState();
+    if (!state.passed) throw new Error('发布安全检查未通过：必须两项均为可见绿色成功状态；' + checkSummary(state));
+    return state;
   }
 
   function getPostButton() {
-    return (
-      document.querySelector('[data-e2e="post_video_button"]') ||
-      textList('postButtonTexts').map((t) => findClickableByText(t, true)).find(Boolean) ||
-      null
-    );
+    return uniqueVisible(document, '[data-e2e="post_video_button"]', '最终发布按钮');
   }
 
-  async function waitForChecksPassAndAssertSafe() {
-    assertProductPickerClosed('点击Posting');
-
-    // 版权/违规检测是唯一一个"配错了也看不出来"的检查——它只在视频真有问题时才触发，
-    // 平时跑一百遍都不会暴露配错。所以没配就必须停下，绝不能当成"检查通过"放行，
-    // 那等于把这道保护静默关掉还让人以为它开着。
-    const violationMarkers = textList('violationMarkers');
-    if (!violationMarkers.length) {
-      throw new Error(
-        '界面文案配置缺失：这个账号没有配置「版权/违规提示」的界面文字，' +
-          '无法确认这条视频是否被TikTok判定违规。为避免把被标记的内容发出去，已停止。' +
-          '请在控制台网页上编辑该账号补上这项文案'
-      );
-    }
-    const checksPassedMarkers = textList('checksPassedMarkers');
-
-    log('等待版权/内容检测完成…');
-    const start = Date.now();
-    const maxWaitMs = 45000;
-    let explicitPassed = false;
-    while (Date.now() - start < maxWaitMs) {
+  async function waitForChecksPassAndAssertSafe(timeoutMs = 10 * 60 * 1000) {
+    assertProductPickerClosed('等待发布前检查');
+    log('等待音乐版权和内容检查双绿（最多10分钟；不会超时放行）…');
+    const deadline = Date.now() + timeoutMs;
+    let passedSince = null;
+    let previous = '';
+    while (Date.now() < deadline) {
       checkForAppCrash();
-      const text = document.body.innerText || '';
-      if (hasAnyMarker(text, violationMarkers)) {
-        throw new Error('检测到版权或内容严重违规，已自动暂停');
+      assertProductPickerClosed('等待发布前检查');
+      const state = getChecksState();
+      const signature = state.checks.map((check) => check.state).join('/');
+      if (signature !== previous) {
+        log('检查状态: ' + checkSummary(state));
+        previous = signature;
       }
-      explicitPassed = hasAnyMarker(text, checksPassedMarkers);
-      if (explicitPassed) {
-        log('检测到明确的"检查通过"提示 ✅');
-        break;
+      if (state.checks.some((check) => check.state === 'blocked' || check.state === 'disabled')) {
+        throw new Error('发布安全检查未通过：' + checkSummary(state));
       }
-      await sleep(1000);
+      const button = getPostButton();
+      if (state.passed && button && isEnabled(button)) {
+        if (passedSince === null) passedSince = Date.now();
+        if (Date.now() - passedSince >= 1000) {
+          assertCaptionSafe('双绿后的文案终检');
+          assertChecksPassed();
+          log('两项检查均明确通过且状态稳定 ✅');
+          return true;
+        }
+      } else {
+        passedSince = null;
+      }
+      await sleep(250);
     }
-    if (!explicitPassed) {
-      // 实测发现"发布按钮是否可点"这个信号不可靠：有些账号上按钮全程都是可点状态，
-      // TikTok不是靠禁用按钮拦截过早提交，而是点了之后弹一个"检查还没做完，要不要
-      // 硬提交"的确认框。所以这里不再用"按钮亮了"当作检查已完成的证据，没等到明确
-      // 的"检查通过"文案就只能老实等满时间；点击后 clickPublishButton 还会再确认一次。
-      log('⚠️ 没等到明确的"检查通过"提示，已等满最长时间，仍会继续，但点击后会再核实一次');
+    throw new Error('发布安全检查未通过：等待双绿超时，不会继续发布；' + checkSummary(getChecksState()));
+  }
+
+  function assertReadyToPublish() {
+    checkForAppCrash();
+    assertProductPickerClosed('发布');
+    assertChecksPassed();
+    assertCaptionSafe('点击发布前最后检查');
+    if (getUploadState().state !== 'success') throw new Error('发布安全检查未通过：上传未完成');
+    if (!switchIsOn(getAiSwitch())) throw new Error('发布安全检查未通过：AI声明未开启');
+    const now = getNowRadio();
+    if (!now?.checked || now.getAttribute('aria-checked') === 'false') {
+      throw new Error('发布安全检查未通过：未选择立即发布');
     }
-    assertCaptionSafe('内容检测完成后的文案终检');
-    log('等待Posting按钮变亮…');
-    const submitBtn = await waitFor(() => {
-      const btn = getPostButton();
-      return btn && isEnabled(btn) ? btn : null;
-    }, 60 * 1000, 1000);
-    await sleep(500);
-    assertCaptionSafe('点击Posting前最后检查');
-    return Boolean(submitBtn);
+    if (!attachedProduct || attachedProductLabel()?.textContent.trim() !== attachedProduct.anchorName) {
+      throw new Error('发布安全检查未通过：没有本次精确商品ID挂载的确认记录');
+    }
+    const btn = getPostButton();
+    if (!btn || !isEnabled(btn)) throw new Error('发布按钮不存在或不可用，取消点击');
+    return true;
   }
 
   async function clickPublishButton() {
-    assertProductPickerClosed('点击Posting');
-    const btn = getPostButton();
-    if (!btn || !isEnabled(btn)) throw new Error('发布按钮不存在或不可用，取消点击');
-    const modalsBefore = getVisibleModalRoots().length;
-    fireClick(btn);
-
-    // 点完之后看一眼是不是弹出了"检查还没做完，确定要提交吗"这类确认框——
-    // 目前只能靠"新出现了一个包含Pemeriksaan字样的弹窗"这个不太精确的信号猜，
-    // 没有更准确的选择器可用。猜中了就直接按"发布结果不确定"处理，绝不会替用户
-    // 点这个确认框（不管它默认是"确认"还是"取消"），一律交给人工核实。
+    // 最终点击当下再读一次DOM，防止等待完成后状态变红/重新检查。
+    assertReadyToPublish();
+    fireClick(getPostButton());
     await sleep(1500);
-    const text = document.body.innerText || '';
-    // 弹窗数量变多是语言无关的结构性信号；文字只是用来降低误判。
-    // 文案没配时退化成"只看弹窗数量"，宁可多报也不漏报——误报的后果只是按
-    // "发布结果不确定"暂停等人确认，是安全方向。
-    const prematureMarkers = textList('prematureCheckMarkers');
-    const modalAppeared = getVisibleModalRoots().length > modalsBefore;
-    const prematureCheck = modalAppeared && (!prematureMarkers.length || hasAnyMarker(text, prematureMarkers));
-    if (prematureCheck) {
-      log('⚠️ 点击发布后检测到疑似"检查未完成"的确认框，按发布结果不确定处理');
-    }
+    // 未知语言的任何新弹窗都视为结果不确定，绝不替用户点“仍然发布”。
+    const prematureCheck = getVisibleModalRoots().length > 0;
+    if (prematureCheck) log('点击发布后出现确认弹窗，按发布结果不确定处理，不点击弹窗');
     return { clicked: true, prematureCheck };
   }
 
@@ -783,21 +659,9 @@ export function installTkqInPage(config) {
       (c) => isVisible(c) && isEnabled(c) && Boolean(c.querySelector('[data-icon="PlusSquare"], [data-icon="plus-square"], svg'))
     );
     if (iconBtn) return iconBtn;
-    // 下面这条按文字找的分支【故意不做成可配置项】，虽然 'Unggah'/'Upload' 是印尼语/英语。
-    // 它已经是第三道兜底了：前面两道靠 data-tt 属性和图标找，都是语言无关的；
-    // 而且这条自己还带一个 href 含 '/upload' 的判断，同样语言无关。
-    // 为它多加一个用户要填的输入框，收益抵不上让人多理解一项配置的成本。
-    const sidebar = document.querySelector('nav, aside, [class*="sidebar"], [class*="Sidebar"]');
-    if (sidebar) {
-      const candidates = Array.from(sidebar.querySelectorAll('button, a')).filter((el) => isVisible(el) && isEnabled(el));
-      const match = candidates.find((el) => {
-        // 忽略大小写：菲律宾后台这个按钮写的是 "I-upload"，
-        // 大小写敏感的 includes('Upload') 匹配不上。
-        const text = normText(el.textContent);
-        return text.includes('unggah') || text.includes('upload') || (el.getAttribute('href') || '').includes('/upload');
-      });
-      if (match) return match;
-    }
+    const links = Array.from(document.querySelectorAll('a[href]')).filter((el) =>
+      isVisible(el) && isEnabled(el) && new URL(el.href, location.href).pathname === '/tiktokstudio/upload');
+    if (links.length === 1) return links[0];
     return null;
   }
 
@@ -822,11 +686,13 @@ export function installTkqInPage(config) {
   window.__tkq = {
     log,
     checkForAppCrash,
-    // 单独暴露出来，是为了让"商品弹窗还开着就不许点发布"这道安全闸门
-    // 能被独立验证——它静默失效时从外部行为上完全看不出来。
     assertProductPickerClosed,
     isUploadPage,
     isContentPage,
+    getUploadState,
+    getChecksState,
+    assertChecksPassed,
+    assertReadyToPublish,
     waitForUploadComplete,
     locateCaptionEditor,
     getCaptionSelectionText,

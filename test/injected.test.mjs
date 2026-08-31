@@ -1,126 +1,302 @@
-// 注入脚本(src/browser/injected.js)在真实浏览器里的行为测试。
-//
-// 重点是几个"静默失效"的坑 —— 它们出问题时从外部行为上完全看不出来：
-//   · 空配置注入不能抛错（抛在发布点击之后会被判成"发布结果不确定"，
-//     视频其实发成功了，账号却被暂停并推送通知）
-//   · 空列表的崩溃检测不能恒为真（[].every() 恒真，会让每轮第一次等待就误报崩溃）
-//   · 商品弹窗闸门没配文案时必须【停下】，不能"检测不到就当没弹窗"往下点
-//
-// 需要一个本地 Chromium。没有的话会跳过（用户机器上通常没有——那边是靠 CDP
-// 连指纹浏览器的，不下载浏览器），不算失败。
+// 匿名本地浏览器夹具，不连接账号，不包含真实快照/商品数据。
+import test, { before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
 import pw from 'playwright-core';
 import { installTkqInPage } from '../src/browser/injected.js';
-import { resolveText, DEFAULT_PAGE_TEXT } from '../src/config.js';
 
-let pass = 0, fail = 0;
-const ok = (name, cond, extra = '') => {
-  if (cond) { pass++; console.log('  ✅', name); }
-  else { fail++; console.log('  ❌', name, extra); }
-};
+let browser, page;
+before(async () => {
+  const executablePath = process.env.CHROMIUM_PATH || [
+    'C:/Program Files/Google/Chrome/Application/chrome.exe',
+    'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+  ].find(existsSync);
+  // 独立临时profile，不读取/关闭用户浏览器。启动失败算失败，不静默跳过测试。
+  browser = await pw.chromium.launch(executablePath ? { executablePath } : {});
+  page = await browser.newPage();
+});
+after(async () => { await browser?.close(); });
 
-let browser;
-try {
-  browser = await pw.chromium.launch(
-    process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}
-  );
-} catch (err) {
-  console.log('⏭️  跳过：本机没有可用的 Chromium。');
-  console.log('   （需要的话装一个再跑：npx playwright install chromium，或用 CHROMIUM_PATH 指定路径）');
-  console.log('   原因:', err.message.split('\n')[0]);
-  process.exit(0);
-}
+const switchHtml = '<div data-state="checked"><input role="switch" type="checkbox" checked></div>';
+const resultHtml = '<div class="status-wrapper">' +
+  '<div class="status-result status-checking" data-show="false"><span class="spinning">…</span><span class="status-tip">任意语言</span></div>' +
+  '<div class="status-result status-warn" data-show="false"><span class="status-tip" style="color:var(--ui-text-danger)">任意语言</span></div>' +
+  '<div class="status-result status-ready" data-show="false">任意语言</div>' +
+  '<div class="status-result status-success" data-show="true"><span class="status-tip" style="color:var(--ui-text-success)">任意语言</span></div></div>';
 
-const page = await browser.newPage();
-await page.setContent('<body><div>正常页面，什么提示都没有</div></body>');
-
-console.log('\n[1] 空配置注入 —— 绝不能抛错');
-{
-  let threw = null;
-  try { await page.evaluate(installTkqInPage, {}); } catch (e) { threw = e.message; }
-  ok('installTkqInPage({}) 不抛错', threw === null, threw || '');
-  ok('window.__tkq 装上了', await page.evaluate(() => typeof window.__tkq === 'object'));
-}
-
-console.log('\n[2] 空配置 —— 崩溃检测不能误报');
-{
-  const r = await page.evaluate(() => {
-    try { window.__tkq.checkForAppCrash(); return 'no-crash'; } catch (e) { return 'THREW: ' + e.message; }
-  });
-  ok('正常页面不误报崩溃', r === 'no-crash', r);
-}
-
-console.log('\n[3] 空配置 —— 商品弹窗闸门必须"停下"而不是"放行"');
-{
-  const r = await page.evaluate(() => {
-    try { window.__tkq.assertProductPickerClosed('点击Posting'); return 'PASSED-THROUGH'; } catch (e) { return e.message; }
-  });
-  ok('抛出了明确的配置缺失错误', r.includes('界面文案配置缺失') && r.includes('商品弹窗'), r);
-  ok('绝对没有静默放行', r !== 'PASSED-THROUGH');
-}
-
-console.log('\n[4] 印尼语完整配置 —— 行为跟改动前一致');
-await page.evaluate(installTkqInPage, { text: resolveText({}, {}) });
-{
-  ok('闸门不再报配置缺失', await page.evaluate(() => {
-    try { window.__tkq.assertProductPickerClosed('x'); return true; } catch (e) { return e.message; }
-  }) === true);
-
-  // 崩溃检测是"两个词都出现才算"，不是"任一出现"——单独一个"Ada masalah"
-  // 很容易出现在别的提示里，会误判成页面崩溃
-  await page.evaluate(() => { document.body.innerHTML = '<div>Ada masalah dengan koneksi</div>'; });
-  ok('只命中一个词不算崩溃', await page.evaluate(() => {
-    try { window.__tkq.checkForAppCrash(); return true; } catch (e) { return e.message; }
-  }) === true);
-
-  await page.evaluate(() => { document.body.innerHTML = '<div>Ada masalah</div><button>Coba lagi</button>'; });
-  const r = await page.evaluate(() => {
-    try { window.__tkq.checkForAppCrash(); return 'NOT-DETECTED'; } catch (e) { return e.message; }
-  });
-  ok('两个词都命中才报崩溃', r.includes('TikTok页面自己崩溃'), r);
-
-  // Chrome 的 innerText 会把 CSS text-transform 算进去，TikTok 有按钮是用CSS转大写的
+async function fresh() {
+  await page.setContent('<style>:root{--ui-text-danger:red;--ui-text-success:green;--ui-text-warning:orange}' +
+    '[data-show="false"]{display:none}.info-progress{height:4px}.collapsed+.options-form{display:none}' +
+    '[role="dialog"]{position:fixed;inset:10px;background:white;border:1px solid}button{min-width:40px;min-height:25px}</style>' +
+    '<div data-e2e="upload_status_container"><div class="info-status success">任意语言</div><div class="info-progress success" style="width:100%"></div></div>' +
+    '<div class="caption-editor"><div contenteditable="true">#fyp #tiktok #tiktokshop</div></div>' +
+    '<div class="anchor-tag-container"><button><span data-icon="Plus">+</span>任意语言</button></div>' +
+    '<div data-e2e="advanced_settings_container" class="more-collapse"><div class="more-btn">任意语言</div></div>' +
+    '<div class="options-form"><div data-e2e="aigc_container">' + switchHtml + '</div><div data-e2e="disclose_content_container"><input type="checkbox"></div></div>' +
+    '<div data-e2e="schedule_container"><input type="radio" name="postSchedule" value="schedule"><input type="radio" name="postSchedule" value="post_now" checked></div>' +
+    '<div class="checks-root"><div class="copyright-check"><div data-e2e="copyright_container">' + switchHtml + '</div>' + resultHtml +
+    '</div><div class="content-check__divider"></div><div class="content-check">' + switchHtml + resultHtml + '</div></div>' +
+    '<button data-e2e="post_video_button">任意语言</button>');
   await page.evaluate(() => {
-    document.body.innerHTML = '<div style="text-transform:uppercase">ada masalah</div><button>COBA LAGI</button>';
+    window.postClicks = 0; window.aiConfirmed = false;
+    document.querySelector('[data-e2e="post_video_button"]').onclick = () => { window.postClicks++; };
   });
-  ok('大小写无关', (await page.evaluate(() => {
-    try { window.__tkq.checkForAppCrash(); return 'NOT-DETECTED'; } catch (e) { return e.message; }
-  })).includes('崩溃'));
+  await page.evaluate(installTkqInPage, { text: {}, hashtagKeywords: ['fyp', 'tiktok', 'tiktokshop'] });
 }
 
-console.log('\n[5] 英文账号 —— 认英文界面，且证明换语言必须重配');
-{
-  const enText = resolveText({}, { textPreset: 'en', textOverrides: {
-    violationMarkers: ['Copyright issue found'], productModalMarkers: ['Add link'] } });
+async function setState(area, state) {
+  await page.evaluate(([area, state]) => {
+    const root = document.querySelector(area === 'music' ? '.copyright-check' : '.content-check');
+    root.querySelectorAll('.status-result').forEach((el) => { el.dataset.show = String(el.classList.contains('status-' + state)); });
+  }, [area, state]);
+}
+
+async function mockProductWorkflow() {
   await page.evaluate(() => {
-    document.body.innerHTML =
-      '<div role="dialog" style="width:200px;height:100px"><h2>Add link</h2><input placeholder="Search products"></div>';
+    const button = (type) => '<button class="TUXButton--' + type + '">任意语言</button>';
+    const footer = () => '<div class="common-modal-footer">' + button('secondary') + button('primary') + '</div>';
+    const show = (cls, html) => {
+      const el = document.createElement('div'); el.className = 'TUXModal common-modal ' + cls;
+      el.setAttribute('role', 'dialog'); el.innerHTML = html; document.body.append(el); return el;
+    };
+    document.querySelector('.anchor-tag-container button').onclick = () => {
+      const type = show('', '<div class="anchor-modal"><button role="combobox" aria-label="33">任意语言</button><div class="button-group">' + button('secondary') + button('primary') + '</div></div>');
+      type.querySelector('.TUXButton--primary').onclick = () => {
+        type.classList.add('no-mask-modal');
+        const select = show('product-selector-modal', '<div class="product-selector-container">' +
+          '<div class="product-search-input"><input type="text"></div><button class="product-search-icon">?</button>' +
+          '<table class="product-table"><tbody><tr><td><input type="radio"><span class="product-name">Test product name</span></td><td class="product-tb-cell">10000000000001</td></tr></tbody></table></div>' + footer());
+        const next = select.querySelector('.TUXButton--primary'); next.disabled = true;
+        select.querySelector('input[type=radio]').onchange = () => { next.disabled = false; };
+        next.onclick = () => {
+          select.remove();
+          const name = show('', '<div class="common-modal-body"><input type="text" value="Test product"><div class="TUXFormField-wordCount">12/30</div></div>' + footer());
+          name.querySelector('.TUXButton--primary').onclick = () => {
+            type.remove(); name.remove();
+            const anchor = document.createElement('div'); anchor.className = 'anchor-container';
+            anchor.innerHTML = '<span class="content-anchor-label">Test product</span>'; document.body.append(anchor);
+          };
+        };
+      };
+    };
   });
-  await page.evaluate(installTkqInPage, { text: enText });
-  const r1 = await page.evaluate(() => {
-    try { window.__tkq.assertProductPickerClosed('点击Posting'); return 'PASSED-THROUGH'; } catch (e) { return e.message; }
-  });
-  ok('英文弹窗被认出来并拦住', r1.includes('商品流程弹窗仍然打开'), r1);
-  ok('用的不是印尼语文案', !JSON.stringify(enText).includes('Tambah tautan'));
-
-  // 反向对照：印尼语配置面对同一个英文弹窗认不出来。
-  // 这正是"跨语言必须重新配、不能靠默认值兜底"的证明。
-  await page.evaluate(installTkqInPage, { text: resolveText({}, {}) });
-  const r2 = await page.evaluate(() => {
-    try { window.__tkq.assertProductPickerClosed('x'); return 'PASSED-THROUGH'; } catch (e) { return e.message; }
-  });
-  ok('印尼语配置认不出英文弹窗', r2 === 'PASSED-THROUGH', r2);
 }
 
-console.log('\n[6] 文案里含引号/反斜杠 —— 不能让 querySelector 抛 SyntaxError');
-{
-  await page.evaluate(installTkqInPage, { text: { ...DEFAULT_PAGE_TEXT, searchProductPlaceholder: 'Ara "ürün" \\ ara' } });
-  await page.evaluate(() => { document.body.innerHTML = '<div>正常页面</div>'; });
-  const r = await page.evaluate(() => {
-    try { window.__tkq.assertProductPickerClosed('x'); return 'ok'; } catch (e) { return e.message; }
+test('空语言配置注入和无弹窗闸门正常', async () => {
+  await fresh();
+  await page.evaluate(() => { window.__tkq.checkForAppCrash(); window.__tkq.assertProductPickerClosed('测试'); });
+});
+
+for (const lang of ['id-ID', 'fil-PH', 'th-TH', 'ms-MY', 'en-US']) {
+  test('翻译替换夹具 ' + lang + ' 双绿通过（不代表当地实测）', async () => {
+    await fresh();
+    await page.evaluate((lang) => { document.documentElement.lang = lang; document.querySelectorAll('.status-tip').forEach((e) => { e.textContent = lang + ' 随机文案'; }); }, lang);
+    assert.equal(await page.evaluate(() => window.__tkq.getChecksState().passed), true);
+    assert.equal(await page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe(1800)), true);
   });
-  ok('特殊字符不炸', r === 'ok', r);
 }
 
-await browser.close();
-console.log(`\n=== ${pass} 通过 / ${fail} 失败 ===`);
-process.exit(fail ? 1 : 0);
+for (const [area, state] of [['music','warn'], ['content','warn'], ['music','checking'], ['content','checking'], ['content','ready']]) {
+  test(area + '=' + state + '，隐藏绿字不能放行', async () => {
+    await fresh(); await setState(area, state);
+    assert.equal(await page.evaluate(() => window.__tkq.getChecksState().passed), false);
+    await assert.rejects(page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe(50)), /发布安全检查未通过/);
+    await assert.rejects(page.evaluate(() => window.__tkq.clickPublishButton()), /发布安全检查未通过/);
+    assert.equal(await page.evaluate(() => window.postClicks), 0);
+  });
+}
+
+test('检查中转换为双绿后，仍需绿色状态稳定才放行', async () => {
+  await fresh(); await setState('content', 'checking');
+  const elapsed = await page.evaluate(async () => {
+    const start = Date.now();
+    setTimeout(() => {
+      document.querySelectorAll('.content-check .status-result').forEach((el) => {
+        el.dataset.show = String(el.classList.contains('status-success'));
+      });
+    }, 150);
+    await window.__tkq.waitForChecksPassAndAssertSafe(2200);
+    return Date.now() - start;
+  });
+  assert.ok(elapsed >= 1150);
+  assert.equal(await page.evaluate(() => window.postClicks), 0);
+});
+
+for (const variation of ['disabled', 'missing', 'ancestor-hidden', 'data-show-false', 'duplicate-green', 'yellow', 'unknown', 'conflicting']) {
+  test('异常检查结构 ' + variation + ' 阻止放行', async () => {
+    await fresh();
+    await page.evaluate((variation) => {
+      const root = document.querySelector('.content-check'), success = root.querySelector('.status-success');
+      if (variation === 'disabled') root.querySelector('input').checked = false;
+      if (variation === 'missing') root.remove();
+      if (variation === 'ancestor-hidden') root.style.display = 'none';
+      if (variation === 'data-show-false') { success.dataset.show = 'false'; success.style.display = 'block'; }
+      if (variation === 'duplicate-green') root.querySelector('.status-wrapper').append(success.cloneNode(true));
+      if (variation === 'yellow') success.querySelector('.status-tip').style.color = 'var(--ui-text-warning)';
+      if (variation === 'unknown') success.className = 'status-result new-unknown';
+      if (variation === 'conflicting') root.querySelector('.status-warn').dataset.show = 'true';
+    }, variation);
+    assert.equal(await page.evaluate(() => window.__tkq.getChecksState().passed), false);
+    await assert.rejects(page.evaluate(() => window.__tkq.clickPublishButton()), /发布安全检查未通过/);
+    assert.equal(await page.evaluate(() => window.postClicks), 0);
+  });
+}
+
+test('上传99%或未知结构不能算完成，不读完成提示文案', async () => {
+  await fresh();
+  assert.equal(await page.evaluate(() => window.__tkq.getUploadState().state), 'success');
+  await page.evaluate(() => { document.querySelector('.info-progress').className = 'info-progress info'; document.querySelector('.info-progress').style.width = '99%'; });
+  assert.equal(await page.evaluate(() => window.__tkq.getUploadState().state), 'uploading');
+  await page.evaluate(() => document.querySelector('[data-e2e="upload_status_container"]').remove());
+  assert.equal(await page.evaluate(() => window.__tkq.getUploadState().state), 'unknown');
+});
+
+test('上传就绪需等待默认标题稳定，不依赖翻译', async () => {
+  await fresh(); await page.locator('[contenteditable]').fill('test-file');
+  await page.evaluate(() => window.__tkq.waitForUploadComplete('test-file.mp4'));
+});
+
+test('任何语言/未知用途弹窗都拦住', async () => {
+  await fresh();
+  await page.evaluate(() => document.body.insertAdjacentHTML('beforeend', '<div role="dialog">X Y Z</div>'));
+  await assert.rejects(page.evaluate(() => window.__tkq.assertProductPickerClosed('发布')), /弹窗仍然打开/);
+  await assert.rejects(page.evaluate(() => window.__tkq.clickPublishButton()), /弹窗仍然打开/);
+  assert.equal(await page.evaluate(() => window.postClicks), 0);
+});
+
+test('立即发布按value定位，不误选顺序在前面的定时发布', async () => {
+  await fresh(); await page.locator('input[value=schedule]').check();
+  await page.evaluate(() => window.__tkq.setPublishNow());
+  assert.equal(await page.locator('input[value=post_now]').isChecked(), true);
+});
+
+test('AI声明先展开，按aigc容器定位，不触碰广告声明', async () => {
+  await fresh();
+  await page.evaluate(() => {
+    const advanced = document.querySelector('[data-e2e=advanced_settings_container]'); advanced.classList.add('collapsed');
+    advanced.querySelector('.more-btn').onclick = () => advanced.classList.remove('collapsed');
+    const input = document.querySelector('[data-e2e=aigc_container] input'); input.checked = false; input.parentElement.dataset.state = 'unchecked';
+    input.onchange = () => { input.parentElement.dataset.state = input.checked ? 'checked' : 'unchecked'; };
+  });
+  await page.evaluate(() => window.__tkq.setAiDisclosure());
+  assert.equal(await page.locator('[data-e2e=aigc_container] input').isChecked(), true);
+  assert.equal(await page.locator('[data-e2e=disclose_content_container] input').isChecked(), false);
+});
+
+for (const known of [true, false]) {
+  test('AI首次确认：' + (known ? '已验证结构可确认' : '未知弹窗不确认'), async () => {
+    await fresh();
+    await page.evaluate((known) => {
+      const input = document.querySelector('[data-e2e=aigc_container] input'); input.checked = false; input.parentElement.dataset.state = 'unchecked';
+      input.onclick = (event) => {
+        event.preventDefault();
+        const modal = document.createElement('div'); modal.setAttribute('role', 'dialog');
+        modal.innerHTML = '<div class="modal-content"><h2>任意语言</h2>' +
+          (known ? '<div class="modal-bullet">1</div><div class="modal-bullet">2</div><div class="modal-bullet">3</div>' : '') +
+          '</div><div class="common-modal-footer"><button data-type="neutral">X</button><button data-type="primary">Y</button></div>';
+        modal.querySelector('[data-type=primary]').onclick = () => { window.aiConfirmed = true; input.checked = true; input.parentElement.dataset.state = 'checked'; modal.remove(); };
+        document.body.append(modal);
+      };
+    }, known);
+    if (known) {
+      await page.evaluate(() => window.__tkq.setAiDisclosure());
+      assert.equal(await page.evaluate(() => window.aiConfirmed), true);
+    } else {
+      await assert.rejects(page.evaluate(() => window.__tkq.setAiDisclosure()), /未知确认弹窗/);
+      assert.equal(await page.evaluate(() => window.aiConfirmed), false);
+    }
+  });
+}
+
+test('商品全流程靠结构和精确ID；本地模拟点击最终按钮一次', async () => {
+  await fresh(); await mockProductWorkflow();
+  const result = await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+  assert.equal(result.anchorName, 'Test product');
+  assert.equal(await page.evaluate(() => window.__tkq.assertReadyToPublish()), true);
+  assert.deepEqual(await page.evaluate(() => window.__tkq.clickPublishButton()), { clicked: true, prematureCheck: false });
+  assert.equal(await page.evaluate(() => window.postClicks), 1);
+});
+
+test('检查通过后变红：最终点击再次校验，不发出点击', async () => {
+  await fresh(); await mockProductWorkflow();
+  await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+  await page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe(1800));
+  await setState('content', 'warn');
+  await assert.rejects(page.evaluate(() => window.__tkq.clickPublishButton()), /发布安全检查未通过/);
+  assert.equal(await page.evaluate(() => window.postClicks), 0);
+});
+
+test('发布后任何新弹窗都报不确定，不替用户确认', async () => {
+  await fresh(); await mockProductWorkflow();
+  await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+  await page.evaluate(() => { document.querySelector('[data-e2e=post_video_button]').onclick = () => document.body.insertAdjacentHTML('beforeend', '<div role="dialog"><button>未知语言确认</button></div>'); });
+  assert.equal((await page.evaluate(() => window.__tkq.clickPublishButton())).prematureCheck, true);
+});
+
+test('重装助手清除上一轮商品确认，不能用旧锚点发布', async () => {
+  await fresh(); await mockProductWorkflow();
+  await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+  await page.evaluate(installTkqInPage, { hashtagKeywords: ['fyp', 'tiktok', 'tiktokshop'] });
+  await assert.rejects(page.evaluate(() => window.__tkq.assertReadyToPublish()), /没有本次精确商品ID/);
+});
+
+for (const variation of ['ai', 'schedule', 'upload', 'caption', 'product', 'button']) {
+  test('最终闸门重新核对 ' + variation + '，不发出点击', async () => {
+    await fresh(); await mockProductWorkflow();
+    await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+    await page.evaluate((variation) => {
+      if (variation === 'ai') document.querySelector('[data-e2e=aigc_container] input').checked = false;
+      if (variation === 'schedule') document.querySelector('input[value=post_now]').checked = false;
+      if (variation === 'upload') document.querySelector('.info-progress').classList.remove('success');
+      if (variation === 'caption') document.querySelector('[contenteditable]').textContent += ' left-over-filename';
+      if (variation === 'product') document.querySelector('.content-anchor-label').textContent = 'another product';
+      if (variation === 'button') document.querySelector('[data-e2e=post_video_button]').disabled = true;
+    }, variation);
+    await assert.rejects(page.evaluate(() => window.__tkq.clickPublishButton()));
+    assert.equal(await page.evaluate(() => window.postClicks), 0);
+  });
+}
+
+test('真实控制台JS：无需语言字段保存账号，且保留旧配置（模拟API，不写用户数据）', async () => {
+  const example = JSON.parse(readFileSync(new URL('../config/settings.example.json', import.meta.url), 'utf8'));
+  let saved;
+  const existing = { name: 'fixture', browser: 'bitbrowser', browserId: 'test-profile', videoFolder: 'C:/fixture', enabled: false,
+    hashtagKeywords: ['fyp'], textPreset: 'custom', textOverrides: { appCrashMarkers: ['X', 'Y'] }, dailyPublishLimit: 7 };
+  await page.route('http://console.test/**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/' || path === '/app.js' || path === '/style.css') {
+      const file = path === '/' ? 'index.html' : path.slice(1);
+      const body = readFileSync(new URL('../public/' + file, import.meta.url), 'utf8');
+      return route.fulfill({ body, contentType: path === '/' ? 'text/html' : path.endsWith('.js') ? 'text/javascript' : 'text/css' });
+    }
+    if (path === '/api/logs/stream') return route.fulfill({ body: '', contentType: 'text/event-stream' });
+    let value = {};
+    if (path === '/api/settings') value = example;
+    if (path === '/api/accounts') {
+      if (route.request().method() === 'PUT') { saved = route.request().postDataJSON(); value = { ok: true, warnings: [] }; }
+      else value = [existing];
+    }
+    if (path === '/api/status') value = { running: false, accounts: [] };
+    if (path === '/api/bitbrowser/profiles') value = [];
+    return route.fulfill({ json: value });
+  });
+  await page.goto('http://console.test/');
+  await page.waitForFunction(() => accountsConfig.length === 1);
+  await page.evaluate(() => openAccountModal(0));
+  await page.locator('#a-name').fill('fixture-edited');
+  await page.locator('#account-form button[type=submit]').click();
+  await page.waitForFunction(() => document.querySelector('#account-modal').classList.contains('hidden'));
+  assert.equal(saved[0].name, 'fixture-edited');
+  assert.equal(saved[0].enabled, false);
+  assert.equal(saved[0].dailyPublishLimit, 7);
+  assert.deepEqual(saved[0].textOverrides, existing.textOverrides);
+  assert.equal(saved[0].textPreset, 'custom');
+});
+
+test('控制台移除了15项翻译表单且保留旧配置', () => {
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.equal(html.includes('a-text-fields'), false);
+  assert.equal(app.includes('currentPresetKey'), false);
+  assert.equal(app.includes('...(previous || {})'), true);
+});

@@ -13,6 +13,7 @@ const NEVER_RETRY_CODES = new Set(['uncertain_publish']);
 
 // 配置类：人不动手改，重试一万次也不会好
 const CONFIG_PATTERNS = [
+  /页面结构不受支持/,
   /界面文案配置缺失/,
   /找不到文件夹/,
   /Require api-key/i,
@@ -28,6 +29,10 @@ const CONFIG_PATTERNS = [
 
 // 内容/数据类：这条视频本身有问题，换个时间重试也是同样结果
 const CONTENT_PATTERNS = [
+  /发布安全检查未通过/,
+  /商品橱窗为空/,
+  /未找到精确商品ID/,
+  /商品确认名称与所选商品不一致/,
   /版权或内容严重违规/,
   /已搜到，但单选框没有真正选中/,
   /商品.*没有真正选中/,

@@ -6,8 +6,6 @@ import {
   resolveHashtags,
   resolveDailyLimit,
   resolveTimezone,
-  findMissingRequiredText,
-  textKeyLabel,
 } from './config.js';
 import { createAdapter } from './browserAdapters/index.js';
 import { createLogger } from './logger.js';
@@ -102,18 +100,6 @@ async function processAccountOnce(account, settings, adapter, log) {
   if (!item) return;
 
   log.info(`账号到点，开始处理第 ${nextIdx + 1}/${state.items.length} 条: ${item.relativePath}`);
-
-  // 开浏览器之前先自检文案配置。放在 startProfile 之前是有意的：配置不全的话
-  // 没必要先把指纹浏览器窗口拉起来再失败。网页上的保存校验能被绕过(手改
-  // accounts.json、校验上线前就存在的老账号、直接改 settings.json)，这里是最后一道。
-  const missingText = findMissingRequiredText(settings, account);
-  if (missingText.length) {
-    throw new Error(
-      `界面文案配置缺失：这个账号缺少 ${missingText.map(textKeyLabel).join('、')}，` +
-        '其中版权/违规提示、商品弹窗这类是安全判断，缺了不会报错但保护是关着的。' +
-        '请在控制台网页上编辑该账号，把界面文案填完整后再继续'
-    );
-  }
 
   // 一旦置为true，说明这轮已经可能点过发布按钮了，任何后续错误都不许自动重试
   let publishAttempted = false;
@@ -241,7 +227,7 @@ async function handleAccountError(account, settings, err, log) {
     if (verdict.code === 'missing_history_tag') {
       howToFix = '这个账号自己打开TikTok Studio手动发一条带上这个话题标签的作品，TikTok记住之后再点控制台网页上的"继续"';
     } else if (verdict.kind === 'config') {
-      howToFix = '这属于配置问题，重试也没用。在控制台网页上点这个账号的"编辑"核对一下环境ID/视频文件夹/界面语言，或者检查指纹浏览器客户端是不是开着';
+      howToFix = '这属于配置问题，重试也没用。在控制台网页上点这个账号的"编辑"核对一下环境ID/视频文件夹和页面结构，或者检查指纹浏览器客户端是不是开着';
     } else {
       howToFix = '这一条需要你人工看一眼再决定怎么处理，处理完在控制台网页上点"继续"';
     }

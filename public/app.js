@@ -1,53 +1,6 @@
-// 界面文案字段清单：键名 + 中文标签 + "去哪里找这段文字"的提示。
-// 提示是给非技术用户看的，让人能对照自己的 TikTok Studio 界面把值抄下来。
-// 键名本身跟 src/config.js 的 DEFAULT_PAGE_TEXT 一一对应；预设的【值】由服务端
-// /api/text-presets 提供，前端不再自己抄一份，避免第三处真值来源。
-const TEXT_FIELDS = [
-  { key: 'searchProductPlaceholder', label: '商品搜索框的提示文字', type: 'string',
-    hint: '挂商品时那个搜索框里的灰色提示字。填错了搜商品那步会当场失败，所以属于必填。' },
-  { key: 'addProductButton', label: '"添加商品"按钮', type: 'string',
-    hint: '编辑页"商品"那一栏里，用来添加商品的按钮上的字。' },
-  { key: 'nextButton', label: '"下一步"按钮', type: 'string',
-    hint: '挂商品的弹窗里，进入下一步的按钮上的字。' },
-  { key: 'publishNowRadioLabel', label: '"立即发布"选项', type: 'string',
-    hint: '发布时间那里，"现在发"这个选项旁边的字（另一个通常是"定时发布"）。' },
-  { key: 'aiDisclosureLabel', label: 'AI声明开关', type: 'string',
-    hint: '展开"更多设置"后，AI生成内容那个开关旁边的说明文字。' },
-  { key: 'productConfirmButtons', label: '商品弹窗的确认按钮', type: 'list',
-    hint: '商品弹窗里"确认/添加/保存"这类按钮。按优先级从前往后写，先匹配上的先点。' },
-  { key: 'showMoreButtons', label: '"展开更多"按钮', type: 'list',
-    hint: '编辑页底部展开高级设置那个按钮上的字。' },
-  { key: 'postButtonTexts', label: '最终发布按钮', type: 'list',
-    hint: '右下角真正发布那个按钮上的字。' },
-  { key: 'productModalMarkers', label: '商品弹窗里必然出现的字', type: 'list',
-    hint: '用来判断商品弹窗是不是还开着——开着就绝不能去点发布，否则会隔着弹窗误点到后面的页面。' +
-          '填弹窗标题这类每次都会出现的词。跟上面的搜索框提示文字两项都空的话，这道闸门就等于没有，' +
-          '所以属于必填。' },
-  { key: 'violationMarkers', label: '版权/违规提示', type: 'list',
-    hint: '视频被判定有版权或违规问题时，页面上会出现的提示。这项只在真出问题时才触发，' +
-          '平时跑一百遍也验证不出配得对不对，所以必须认真填——填不上就等于这道保护没开。' },
-  { key: 'checksPassedMarkers', label: '"检查通过"提示', type: 'list',
-    hint: '版权检查完成且没问题时的提示。不填的话每条都要多等满45秒，不影响安全。' },
-  { key: 'appCrashMarkers', label: '页面崩溃错误页上的字', type: 'list', all: true,
-    hint: '⚠️ 这一项是"全部都要出现才算崩溃"，跟其它项不一样。TikTok自己崩溃时会显示一个' +
-          '错误页，把上面的标题和按钮文字都填上（比如"出错了"+"重试"）。不填只会导致崩溃时' +
-          '干等到超时，不会误判。' },
-  { key: 'prematureCheckMarkers', label: '"检查未完成仍要发布"确认框', type: 'list',
-    hint: '版权检查还没跑完就点了发布时，弹出来的那个确认框里的字。不填会退化成靠弹窗数量判断，' +
-          '偏向于多报，是安全方向。' },
-  { key: 'uploadDoneMarkers', label: '上传完成提示（可留空）', type: 'list',
-    hint: '印尼语和英语已经内置在代码里了，这两种语言可以留空。其它语言填"已上传/上传完成"这类词。' },
-  { key: 'uploadingMarkers', label: '上传中提示（可留空）', type: 'list',
-    hint: '同上，印尼语英语已内置。填的话要填只在上传过程中出现的词（比如带倒计时的那种），' +
-          '如果填了个在别处也会出现的词，会让程序以为一直在上传。' },
-];
-
 let accountsConfig = [];
 let currentSettings = null;
 let statusData = { running: false, accounts: [] };
-let textPresets = null; // 由 /api/text-presets 提供
-let safetyTextKeys = [];
-let requiredTextKeys = [];
 
 async function api(method, url, body) {
   const res = await fetch(url, {
@@ -250,111 +203,8 @@ function openAccountModal(idx) {
   document.getElementById('a-folder').value = account.videoFolder || '';
   document.getElementById('a-hashtags').value = (account.hashtagKeywords || ['fyp', 'tiktok', 'tiktokshop']).join(',');
 
-  // 用【合并后实际生效的值】回填，而不是只回填 account.textOverrides。
-  // 这一点很关键：印尼语账号的 textOverrides 本来就是空的，如果按空值回填，
-  // 用户只是进来改一下文件夹路径再保存，就会把一堆空字符串写成 textOverrides，
-  // 而空字符串会让 findClickableByText('') 匹配到页面上任意一个空元素并点下去。
-  document.getElementById('a-preset-pick').value = presetIdOf(account);
-  updatePresetHint();
-  fillTextFields(effectiveTextFor(account));
-
   updateBrowserFields();
   modal.classList.remove('hidden');
-}
-
-// 跟服务端 src/config.js 的 mergeText 保持同样的语义：空字符串/空数组一律当"没填"，
-// 继续继承下一层。数据(默认值)来自服务端，这里只是同一套合并规则的前端镜像。
-function isBlankValue(v) {
-  if (v === undefined || v === null) return true;
-  if (typeof v === 'string') return !v.trim();
-  if (Array.isArray(v)) return v.filter((x) => typeof x === 'string' && x.trim()).length === 0;
-  return false;
-}
-
-// 这个账号声明的是哪种界面语言。没写就跟全局一致（老账号没有这个字段，
-// 必须让它继续走原来那条印尼语的路）。
-function presetIdOf(account) {
-  const id = account && typeof account.textPreset === 'string' ? account.textPreset.trim() : '';
-  return id || globalPresetId();
-}
-
-function globalPresetId() {
-  return (textPresets && textPresets.globalPreset) || 'id';
-}
-
-// 服务端 src/config.js 的 resolveText 的前端镜像，规则必须一模一样，
-// 否则网页上显示的"实际生效值"跟真正跑的时候不是一回事。
-// 核心是：账号语言跟全局语言不一样时，【不继承】全局那套文案——
-// 那是另一种语言的字，继承过来看着像配好了，实际永远匹配不上。
-function effectiveTextFor(account) {
-  const accountId = presetIdOf(account);
-  const preset = (textPresets && textPresets.presets[accountId]) || null;
-  const base = preset ? preset.text : {}; // 认不出的预设名不拿印尼语兜底
-  const layers =
-    accountId === globalPresetId()
-      ? [base, (textPresets && textPresets.globalText) || {}, (account && account.textOverrides) || {}]
-      : [base, (account && account.textOverrides) || {}];
-  const out = {};
-  for (const layer of layers) {
-    for (const [k, v] of Object.entries(layer)) {
-      if (k.startsWith('_') || isBlankValue(v)) continue;
-      out[k] = v;
-    }
-  }
-  return out;
-}
-
-// 按 TEXT_FIELDS 动态生成输入框，HTML 里不再硬编码键名
-function renderTextFields() {
-  const box = document.getElementById('a-text-fields');
-  if (!box || box.dataset.rendered) return;
-  box.dataset.rendered = '1';
-  box.innerHTML = TEXT_FIELDS.map((f) => {
-    // 两种徽标要分开：安全项配错了平时完全看不出来(保护静默关掉)，
-    // 其它必填项缺了会当场卡住报错，危险程度不是一回事。
-    const badge = safetyTextKeys.includes(f.key)
-      ? '<span class="tag" style="background:#fdecea;color:var(--red);">必填 · 安全</span> '
-      : requiredTextKeys.includes(f.key)
-        ? '<span class="tag" style="background:#fdecea;color:var(--red);">必填</span> '
-        : '';
-    const multi = f.type === 'list' ? '（多个用逗号分隔）' : '';
-    return `
-      <div class="field span2">
-        <label>${badge}${escapeHtml(f.label)}${multi}</label>
-        <input type="text" id="a-t-${f.key}" data-text-key="${f.key}">
-        <div class="hint">${escapeHtml(f.hint)}</div>
-      </div>`;
-  }).join('');
-}
-
-function fillTextFields(text) {
-  renderTextFields();
-  for (const f of TEXT_FIELDS) {
-    const el = document.getElementById(`a-t-${f.key}`);
-    if (!el) continue;
-    const v = text[f.key];
-    el.value = Array.isArray(v) ? v.join(',') : v || '';
-  }
-}
-
-// 只把"跟当前生效值不同"的项写进 textOverrides；空白项直接不写(表示继承)。
-// 这样进来改个文件夹再保存，不会顺手把文案配置写死一份到这个账号上。
-function collectTextOverrides(account) {
-  // base 必须按【当前选中的预设】算，而不是按账号原来的预设算。用户刚把预设从
-  // 印尼语切成英语时，继承来的底值已经变了，用旧底值比对会把该存的项当成
-  // "跟继承的一样"给丢掉。
-  const base = effectiveTextFor({ textPreset: account.textPreset });
-  const overrides = {};
-  for (const f of TEXT_FIELDS) {
-    const el = document.getElementById(`a-t-${f.key}`);
-    if (!el) continue;
-    const raw = el.value;
-    const value = f.type === 'list' ? splitList(raw) : raw.trim();
-    if (isBlankValue(value)) continue; // 留空 = 继承，绝不写成空值覆盖
-    if (JSON.stringify(value) === JSON.stringify(base[f.key])) continue; // 跟继承来的一样就不用存
-    overrides[f.key] = value;
-  }
-  return Object.keys(overrides).length ? overrides : undefined;
 }
 
 function closeAccountModal() {
@@ -406,48 +256,6 @@ document.getElementById('a-bitbrowser-picker').addEventListener('change', (e) =>
   if (e.target.value) document.getElementById('a-profileid').value = e.target.value;
 });
 
-// 选哪套预设，决定的不只是"往输入框里填什么"，还决定这个账号【继承谁】：
-// 跟全局语言一致时才继承全局那套文案，不一致时只继承预设本身。所以换预设必须
-// 连带把输入框重填一遍，否则框里显示的还是上一种语言的继承值，跟实际生效的对不上。
-function currentPresetKey() {
-  return document.getElementById('a-preset-pick').value;
-}
-
-function missingRequiredIn(text) {
-  return requiredTextKeys.filter((k) => isBlankValue(text[k]));
-}
-
-function labelsFor(keys) {
-  return keys.map((k) => (TEXT_FIELDS.find((f) => f.key === k) || {}).label || k);
-}
-
-function updatePresetHint() {
-  const key = currentPresetKey();
-  const preset = textPresets && textPresets.presets[key];
-  const hintEl = document.getElementById('a-preset-hint');
-  if (!preset) {
-    hintEl.textContent = '';
-    return;
-  }
-  const missing = missingRequiredIn(effectiveTextFor({ textPreset: key }));
-  if (!missing.length) {
-    hintEl.textContent = `「${preset.label}」是完整的，可以直接用，也可以按自己界面微调。`;
-    return;
-  }
-  hintEl.innerHTML =
-    `<b style="color:var(--red);">「${escapeHtml(preset.label)}」里 ${escapeHtml(labelsFor(missing).join('、'))} 这几项没有内置值</b>，` +
-    '因为我们没有验证过这个语言的真实界面。编一个翻译给你反而更危险——会让你以为版权检测这类保护开着，' +
-    '其实它永远匹配不上、每条视频都会被当成"检测通过"。请打开这个账号的 TikTok Studio 对照着填。';
-}
-
-function applyPreset() {
-  fillTextFields(effectiveTextFor({ textPreset: currentPresetKey() }));
-  updatePresetHint();
-}
-
-document.getElementById('a-preset-pick').addEventListener('change', applyPreset);
-document.getElementById('a-preset-load').addEventListener('click', applyPreset);
-
 document.getElementById('a-browser').addEventListener('change', updateBrowserFields);
 document.getElementById('btn-add-account').addEventListener('click', () => openAccountModal(null));
 document.getElementById('a-cancel-btn').addEventListener('click', closeAccountModal);
@@ -486,33 +294,16 @@ accountForm.addEventListener('submit', async (e) => {
   const originalName = document.getElementById('a-original-name').value;
   const browser = document.getElementById('a-browser').value;
 
+  // 保留旧配置和账号级额度/时区等字段，升级不覆写用户已有设置。
+  const previous = accountsConfig.find((a) => a.name === originalName);
   const account = {
+    ...(previous || {}),
     name: document.getElementById('a-name').value.trim(),
     browser,
     videoFolder: document.getElementById('a-folder').value.trim(),
-    enabled: true,
-    textPreset: currentPresetKey(),
-    hashtagKeywords: splitList(document.getElementById('a-hashtags').value) || undefined,
+    enabled: previous?.enabled !== false,
+    hashtagKeywords: splitList(document.getElementById('a-hashtags').value),
   };
-  account.textOverrides = collectTextOverrides(account);
-
-  // 提交前先自查必填文案，把问题直接指到具体字段上，比等服务端返回一句话好懂。
-  // 服务端还会再查一遍(这里能被绕过)，两边用的是同一份 requiredKeys。
-  const effective = effectiveTextFor(account);
-  const missing = missingRequiredIn(effective);
-  if (missing.length) {
-    const hasSafety = missing.some((k) => safetyTextKeys.includes(k));
-    const el = document.getElementById('account-form-error');
-    el.innerHTML =
-      `还差这几项界面文案没填：<b>${escapeHtml(labelsFor(missing).join('、'))}</b>。` +
-      (hasSafety
-        ? '其中有关系到"这条视频有没有被判违规""商品弹窗是不是还开着"这类安全判断的项，缺了不会报错、但保护是关的，所以不能保存。'
-        : '缺了这些跑到一半会卡住报错，所以不能保存。') +
-      '请打开这个账号的 TikTok Studio 对照界面填上。';
-    el.classList.remove('hidden');
-    return;
-  }
-
   if (browser === 'adspower') {
     account.profileId = document.getElementById('a-profileid').value.trim();
   } else if (browser === 'hubstudio') {
@@ -766,17 +557,6 @@ function populateTimezones(currentValue) {
 }
 
 async function init() {
-  // 预设要在打开账号弹窗之前就位——回填生效值和"载入预设"都依赖它
-  try {
-    textPresets = await api('GET', '/api/text-presets');
-    safetyTextKeys = textPresets.safetyCriticalKeys || [];
-    requiredTextKeys = textPresets.requiredKeys || [];
-    document.getElementById('a-preset-pick').innerHTML = Object.entries(textPresets.presets)
-      .map(([k, p]) => `<option value="${escapeAttr(k)}">${escapeHtml(p.label)}</option>`)
-      .join('');
-  } catch (err) {
-    showGlobalError('读取界面文案预设失败: ' + err.message);
-  }
   try {
     currentSettings = await api('GET', '/api/settings');
     populateTimezones(currentSettings.timezone || 'Asia/Jakarta');
