@@ -791,8 +791,10 @@ export function installTkqInPage(config) {
     if (sidebar) {
       const candidates = Array.from(sidebar.querySelectorAll('button, a')).filter((el) => isVisible(el) && isEnabled(el));
       const match = candidates.find((el) => {
-        const text = (el.textContent || '').trim();
-        return text.includes('Unggah') || text.includes('Upload') || (el.getAttribute('href') || '').includes('/upload');
+        // 忽略大小写：菲律宾后台这个按钮写的是 "I-upload"，
+        // 大小写敏感的 includes('Upload') 匹配不上。
+        const text = normText(el.textContent);
+        return text.includes('unggah') || text.includes('upload') || (el.getAttribute('href') || '').includes('/upload');
       });
       if (match) return match;
     }

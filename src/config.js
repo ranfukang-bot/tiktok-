@@ -139,7 +139,8 @@ export const REQUIRED_TEXT_KEYS = [
   'addProductButton',
   'aiDisclosureLabel',
   'productConfirmButtons',
-  'showMoreButtons',
+  // showMoreButtons 【不】列进必填：展开高级设置那步优先用容器里的 .more-btn
+  // (语言无关的结构性路径)，文字匹配只是兜底，留空也能正常展开。
   'productModalMarkers',
   'violationMarkers',
 ];
