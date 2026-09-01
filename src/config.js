@@ -129,3 +129,14 @@ export function resolveDailyLimit(settings, account) {
 export function resolveTimezone(settings, account) {
   return account.timezone || settings.timezone || 'Asia/Jakarta';
 }
+
+// 允许发布的时间段(按小时,账号自己的时区)。默认中午12点到午夜0点(=24点)，
+// 避免额度一到凌晨0点刷新就立刻发，堆积视频时会变成"凌晨连发4条"这种不像真人的节奏。
+// 只做全局设置，没做成账号级覆盖：时段本身(几点到几点)跟地区无关，地区差异已经
+// 由 resolveTimezone 处理了——同样的"中午到午夜"，套到账号自己的时区上就是当地时间。
+export function resolvePostingWindow(settings) {
+  const w = settings.postingWindow || {};
+  const startHour = Number.isFinite(w.startHour) ? w.startHour : 12;
+  const endHour = Number.isFinite(w.endHour) ? w.endHour : 24;
+  return { enabled: w.enabled !== false, startHour, endHour };
+}

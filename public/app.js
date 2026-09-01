@@ -93,6 +93,9 @@ function renderAccounts() {
     } else if (runtime.quotaExhausted) {
       const tz = runtime.timezone || 'Asia/Jakarta';
       stateHtml = `<span class="state paused">今日额度用完(${runtime.publishedToday}/${runtime.dailyLimit})，等 ${escapeHtml(tz)} 的明天</span>`;
+    } else if (runtime.inPostingWindow === false) {
+      const wait = runtime.nextWindowStart ? fmtRemaining(runtime.nextWindowStart - Date.now()) : '';
+      stateHtml = `<span class="state paused">不在允许发布的时间段内，还要等${wait ? ' ' + wait : ''}</span>`;
     } else if (runtime.total === 0) {
       stateHtml = `<span class="state paused">还没检测到视频，点"立即扫描"看看</span>`;
     } else if (runtime.remaining === 0) {
@@ -377,6 +380,11 @@ function fillSettingsForm(settings) {
   document.getElementById('s-daily-limit').value = settings.dailyPublishLimit ?? 0;
   document.getElementById('s-timezone').value = settings.timezone || 'Asia/Jakarta';
 
+  const window = settings.postingWindow || {};
+  document.getElementById('s-window-enabled').checked = window.enabled !== false;
+  document.getElementById('s-window-start').value = window.startHour ?? 12;
+  document.getElementById('s-window-end').value = window.endHour ?? 24;
+
   const notif = settings.notifications || {};
   document.getElementById('s-notify-enabled').checked = Boolean(notif.enabled);
   document.getElementById('s-notify-provider').value = notif.provider || 'telegram';
@@ -413,6 +421,11 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
   settings.deleteAfterPublish = document.getElementById('s-delete-after-publish').checked;
   settings.dailyPublishLimit = Number(document.getElementById('s-daily-limit').value) || 0;
   settings.timezone = document.getElementById('s-timezone').value;
+  settings.postingWindow = {
+    enabled: document.getElementById('s-window-enabled').checked,
+    startHour: Number(document.getElementById('s-window-start').value),
+    endHour: Number(document.getElementById('s-window-end').value),
+  };
   settings.notifications = {
     ...(currentSettings.notifications || {}),
     enabled: document.getElementById('s-notify-enabled').checked,

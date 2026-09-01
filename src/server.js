@@ -69,6 +69,10 @@ app.put('/api/settings', (req, res) => {
     if (!settings || typeof settings !== 'object') throw new Error('设置内容格式不对');
     if (!settings.minIntervalMs || !settings.maxIntervalMs) throw new Error('必须填写发布间隔的最小值和最大值');
     if (settings.minIntervalMs > settings.maxIntervalMs) throw new Error('间隔最小值不能大于最大值');
+    const window = settings.postingWindow;
+    if (window && window.enabled && Number(window.startHour) >= Number(window.endHour)) {
+      throw new Error('允许发布的时间段：开始时间必须早于结束时间，否则会一直卡在时间段外发不出去');
+    }
     saveSettings(settings);
     res.json({ ok: true });
   } catch (err) {

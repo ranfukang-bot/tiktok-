@@ -8,7 +8,7 @@
     "start": "node src/server.js",
     "cli": "node src/index.js run",
     "resolve": "node src/index.js resolve",
-    "test": "node test/text-config.test.mjs && node test/injected.test.mjs"
+    "test": "node --test"
   },
   "dependencies": {
     "express": "^4.22.2",

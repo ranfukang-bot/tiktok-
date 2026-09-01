@@ -63,6 +63,21 @@
             <div class="hint">做哪个地区就选哪个地区的时区，额度按当地0点刷新。</div>
           </div>
           <div class="field span2">
+            <label><input type="checkbox" id="s-window-enabled"> 只在指定时间段内发布</label>
+            <div class="hint">
+              额度是按当地0点刷新的，但"刚过0点有额度"不代表这时候该发——文件夹里堆着视频的话，
+              不开这个会变成凌晨几点连发好几条，没有真人会这样发。开着的话，时段之外攒着的额度不会丢，等时段开始接着发。
+            </div>
+          </div>
+          <div class="field">
+            <label>几点开始（当地时间，24小时制）</label>
+            <input type="number" min="0" max="23" step="1" id="s-window-start">
+          </div>
+          <div class="field">
+            <label>几点结束（24=到午夜）</label>
+            <input type="number" min="1" max="24" step="1" id="s-window-end">
+          </div>
+          <div class="field span2">
             <label><input type="checkbox" id="s-delete-after-publish"> 确认发布成功后，把源视频文件移到回收站</label>
             <div class="hint">
               开着的话，文件夹本身就是"待发布清单"：里面还有视频=没发完，空了就该加新的，不用再对照进度列表。

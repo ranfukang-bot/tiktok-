@@ -6,6 +6,7 @@ import {
   resolveHashtags,
   resolveDailyLimit,
   resolveTimezone,
+  resolvePostingWindow,
 } from './config.js';
 import { createAdapter } from './browserAdapters/index.js';
 import { createLogger } from './logger.js';
@@ -14,7 +15,7 @@ import { scanDirectory, syncFilesIntoQueue, deletePublishedFile } from './folder
 import { runOneUploadCycle } from './browser/tiktokStudio.js';
 import { classifyError, retryDelayMs, maxRetries } from './errorPolicy.js';
 import { notify } from './notifier.js';
-import { rolloverIfNewDay, hasQuotaRemaining } from './dailyQuota.js';
+import { rolloverIfNewDay, hasQuotaRemaining, isWithinPostingWindow, nextPostingWindowStartMs } from './dailyQuota.js';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -191,6 +192,12 @@ async function tickAccount(settings, account, adapters) {
     }
     // 今天的额度用完了，安安静静跳过，不算错误也不用暂停/通知——按账号自己的时区过了0点自动恢复
     if (!hasQuotaRemaining(state, dailyLimit)) return;
+
+    // 不在允许发布的时间段内(默认中午12点到午夜0点，按账号自己的时区)：安静跳过，
+    // 不暂停不通知。这是专门防"额度一到凌晨0点刷新，文件夹里堆着视频就连发好几条"
+    // 这种不像真人的节奏——原本只看"离上次发布过了多久"，完全不看现在是几点。
+    const window = resolvePostingWindow(settings);
+    if (!isWithinPostingWindow(Date.now(), timezone, window)) return;
 
     if (!Number.isInteger(state.pendingIndex)) {
       await syncAccountFolder(account, settings, log);
