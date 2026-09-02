@@ -61,6 +61,39 @@ function fmtRemaining(ms) {
 
 // ===================== 账号列表渲染 =====================
 
+// 顶部概览：进来第一眼要能回答"几个号在跑 / 今天发了多少 / 还剩多少没发 /
+// 有没有事等我处理"。之前这些数字散在每张卡片里，得一张张看过去才拼得出来。
+function renderStats() {
+  const box = document.getElementById('stats');
+  if (!box) return;
+
+  const runtimes = statusData.accounts || [];
+  const enabled = accountsConfig.filter((a) => a.enabled !== false).length;
+  let publishedToday = 0;
+  let quotaToday = 0;
+  let pending = 0;
+  let needsMe = 0;
+  for (const r of runtimes) {
+    publishedToday += r.publishedToday || 0;
+    if (r.dailyLimit) quotaToday += r.dailyLimit;
+    pending += r.remaining || 0;
+    if (r.paused) needsMe += 1;
+  }
+
+  const tile = (k, v, unit, alert) =>
+    `<div class="stat${alert ? ' alert' : ''}">
+       <span class="k">${k}</span>
+       <span class="v">${v}${unit ? `<small>${unit}</small>` : ''}</span>
+     </div>`;
+
+  box.innerHTML = [
+    tile('启用中的账号', enabled, accountsConfig.length > enabled ? `/ 共 ${accountsConfig.length}` : ''),
+    tile('今天已发布', publishedToday, quotaToday ? `/ ${quotaToday}` : ''),
+    tile('待发布视频', pending, '条'),
+    tile('需要你处理', needsMe, needsMe ? '个账号' : '', needsMe > 0),
+  ].join('');
+}
+
 function renderAccounts() {
   const list = document.getElementById('accounts-list');
   const empty = document.getElementById('accounts-empty');
@@ -79,32 +112,48 @@ function renderAccounts() {
     card.className = 'account-card';
 
     const enabled = account.enabled !== false;
+    // state = 气泡样式(ok/paused/processing)，edge = 卡片左侧竖条颜色。
+    // 分开是因为竖条要能区分"正常等着(绿)"和"正在处理(蓝)"，而气泡只有三种配色。
     let stateHtml = '';
+    let edge = 'idle';
+    // "已停用""尚未扫描"用中性色：它们不是出问题，标成红色只会白白抢走注意力
     if (!enabled) {
-      stateHtml = `<span class="state paused">已停用</span>`;
+      stateHtml = `<span class="state off">已停用</span>`;
     } else if (!runtime) {
-      stateHtml = `<span class="state paused">尚未扫描</span>`;
+      stateHtml = `<span class="state off">尚未扫描</span>`;
     } else if (runtime.processing) {
       stateHtml = `<span class="state processing">正在处理…</span>`;
+      edge = 'busy';
     } else if (runtime.paused) {
       stateHtml = `<span class="state paused">已暂停</span>`;
+      edge = 'bad';
     } else if (runtime.retryAt && runtime.retryAt > Date.now()) {
       stateHtml = `<span class="state processing">出错重试中，${fmtRemaining(runtime.retryAt - Date.now())}</span>`;
+      edge = 'warn';
     } else if (runtime.quotaExhausted) {
       const tz = runtime.timezone || 'Asia/Jakarta';
       stateHtml = `<span class="state paused">今日额度用完(${runtime.publishedToday}/${runtime.dailyLimit})，等 ${escapeHtml(tz)} 的明天</span>`;
+      edge = 'idle';
     } else if (runtime.inPostingWindow === false) {
       const wait = runtime.nextWindowStart ? fmtRemaining(runtime.nextWindowStart - Date.now()) : '';
       stateHtml = `<span class="state paused">不在允许发布的时间段内，还要等${wait ? ' ' + wait : ''}</span>`;
+      edge = 'idle';
     } else if (runtime.total === 0) {
       stateHtml = `<span class="state paused">还没检测到视频，点"立即扫描"看看</span>`;
+      edge = 'warn';
     } else if (runtime.remaining === 0) {
       stateHtml = `<span class="state ok">队列已跑完，等待新视频</span>`;
+      edge = 'ok';
     } else {
-      stateHtml = `<span class="state ok">${fmtRemaining(runtime.nextTime - Date.now())}</span>`;
+      stateHtml = `<span class="state ok">${fmtRemaining(runtime.nextTime - Date.now())}后发下一条</span>`;
+      edge = 'ok';
     }
+    card.dataset.state = edge;
 
-    const progress = runtime ? `${runtime.doneIndex + 1 < 0 ? 0 : runtime.doneIndex + 1}/${runtime.total}` : '-';
+    // 还没扫描过的账号没有进度可言，那一格整个不显示，别摆一个"已发 -"在那
+    const progressHtml = runtime
+      ? `<span class="progress">已发 ${runtime.doneIndex + 1 < 0 ? 0 : runtime.doneIndex + 1}/${runtime.total}</span>`
+      : '';
     const quotaBadge =
       runtime && runtime.dailyLimit
         ? `<span class="tag" title="今日已发/每日上限">今日 ${runtime.publishedToday}/${runtime.dailyLimit}</span>`
@@ -124,18 +173,24 @@ function renderAccounts() {
     if (enabled) actions.push(`<button data-action="scan" data-name="${escapeAttr(account.name)}">立即扫描</button>`);
     actions.push(`<button data-action="edit" data-idx="${idx}">编辑</button>`);
 
+    // 三层结构：账号名+状态一行(最显眼) / 路径进度这些细节一行(弱化) / 操作按钮一行
     card.innerHTML = `
-      <span class="name">${escapeHtml(account.name)}</span>
-      <span class="tag">${{ adspower: 'AdsPower', hubstudio: 'Hubstudio', bitbrowser: 'BitBrowser' }[account.browser] || account.browser}</span>
-      <span class="folder" title="${escapeAttr(account.videoFolder)}">${escapeHtml(account.videoFolder)}</span>
-      <span class="progress">${progress}</span>
-      ${quotaBadge}
-      ${stateHtml}
-      <span class="spacer"></span>
-      <span class="actions">${actions.join('')}</span>
+      <div class="ac-head">
+        <span class="name">${escapeHtml(account.name)}</span>
+        <span class="tag">${{ adspower: 'AdsPower', hubstudio: 'Hubstudio', bitbrowser: 'BitBrowser' }[account.browser] || account.browser}</span>
+        <span class="spacer"></span>
+        ${stateHtml}
+      </div>
+      <div class="ac-meta">
+        ${progressHtml}
+        ${quotaBadge}
+        ${progressHtml || quotaBadge ? '<span class="sep">·</span>' : ''}
+        <span class="folder" title="${escapeAttr(account.videoFolder)}">${escapeHtml(account.videoFolder)}</span>
+      </div>
+      <div class="actions">${actions.join('')}</div>
       ${runtime && runtime.paused && runtime.pauseReason ? `<div class="reason">${escapeHtml(runtime.pauseReason)}</div>` : ''}
       ${runtime && !runtime.paused && runtime.retryAt && runtime.retryAt > Date.now() && runtime.lastError
-        ? `<div class="reason" style="color:var(--amber);">上次失败（已自动重试 ${runtime.consecutiveFailures} 次）：${escapeHtml(runtime.lastError)}</div>`
+        ? `<div class="reason" style="color:var(--amber);background:var(--amber-bg);border-color:color-mix(in srgb, var(--amber) 20%, transparent);">上次失败（已自动重试 ${runtime.consecutiveFailures} 次）：${escapeHtml(runtime.lastError)}</div>`
         : ''}
     `;
     list.appendChild(card);
@@ -494,6 +549,7 @@ async function refreshStatus() {
     document.getElementById('btn-start').disabled = statusData.running;
     document.getElementById('btn-stop').disabled = !statusData.running;
     if (statusData.settingsError) showGlobalError(statusData.settingsError);
+    renderStats();
     renderAccounts();
   } catch (err) {
     showGlobalError(err.message);

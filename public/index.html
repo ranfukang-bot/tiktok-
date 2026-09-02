@@ -19,6 +19,9 @@
 <main>
   <div id="global-error" class="error-banner hidden"></div>
 
+  <!-- 概览数字由 app.js 的 renderStats() 填充 -->
+  <div id="stats"></div>
+
   <section class="card" id="accounts-section">
     <div class="section-header">
       <h2>账号列表</h2>
@@ -33,63 +36,78 @@
     <details id="settings-details">
       <summary>全局设置</summary>
       <form id="settings-form">
-        <div class="form-grid">
-          <div class="field">
-            <label>发布间隔 最短（小时）</label>
-            <input type="number" min="0.1" step="0.1" id="s-min-hours" required>
-          </div>
-          <div class="field">
-            <label>发布间隔 最长（小时）</label>
-            <input type="number" min="0.1" step="0.1" id="s-max-hours" required>
-          </div>
-          <div class="field">
-            <label>同时最多运行几个账号（并发数）</label>
-            <input type="number" min="1" step="1" id="s-concurrency" required>
-            <div class="hint">建议先用 1，全部账号排队跑，最稳妥。</div>
-          </div>
-          <div class="field">
-            <label>文件夹检查间隔（秒）</label>
-            <input type="number" min="5" step="5" id="s-scan-seconds" required>
-          </div>
-          <div class="field">
-            <label>每个账号每天最多发几条（0=不限）</label>
-            <input type="number" min="0" step="1" id="s-daily-limit">
-            <div class="hint">按下面的时区算"一天"，发够这个数就停，等第二天0点自动刷新额度。</div>
-          </div>
-          <div class="field">
-            <label>时区（算"一天"的边界、算日切换点用）</label>
-            <!-- 选项由 app.js 的 populateTimezones() 动态生成：常用跨境地区置顶 + 完整IANA列表 -->
-            <select id="s-timezone"></select>
-            <div class="hint">做哪个地区就选哪个地区的时区，额度按当地0点刷新。</div>
-          </div>
-          <div class="field span2">
-            <label><input type="checkbox" id="s-window-enabled"> 只在指定时间段内发布</label>
-            <div class="hint">
-              额度是按当地0点刷新的，但"刚过0点有额度"不代表这时候该发——文件夹里堆着视频的话，
-              不开这个会变成凌晨几点连发好几条，没有真人会这样发。开着的话，时段之外攒着的额度不会丢，等时段开始接着发。
+        <div class="group">
+          <h3>发布节奏</h3>
+          <div class="form-grid">
+            <div class="field">
+              <label>发布间隔 最短（小时）</label>
+              <input type="number" min="0.1" step="0.1" id="s-min-hours" required>
+            </div>
+            <div class="field">
+              <label>发布间隔 最长（小时）</label>
+              <input type="number" min="0.1" step="0.1" id="s-max-hours" required>
+            </div>
+            <div class="field">
+              <label>同时最多运行几个账号</label>
+              <input type="number" min="1" step="1" id="s-concurrency" required>
+              <div class="hint">建议先用 1，全部账号排队跑，最稳妥。</div>
+            </div>
+            <div class="field">
+              <label>文件夹检查间隔（秒）</label>
+              <input type="number" min="5" step="5" id="s-scan-seconds" required>
             </div>
           </div>
-          <div class="field">
-            <label>几点开始（当地时间，24小时制）</label>
-            <input type="number" min="0" max="23" step="1" id="s-window-start">
-          </div>
-          <div class="field">
-            <label>几点结束（24=到午夜）</label>
-            <input type="number" min="1" max="24" step="1" id="s-window-end">
-          </div>
-          <div class="field span2">
-            <label><input type="checkbox" id="s-close-profile"> 这一条处理完就关掉该账号的指纹浏览器窗口</label>
-            <div class="hint">
-              一个开着的窗口要占一千多MB内存，账号多了电脑会很吃力。开着这项的话，每条视频处理完
-              （成功、失败、或者结果不确定都算）就把窗口关掉，下一条到点了再重新开。
-              关窗口不影响登录状态和指纹——那些是指纹浏览器自己存着的，重开还是原样。
+        </div>
+
+        <div class="group">
+          <h3>每日额度与发布时段</h3>
+          <div class="form-grid">
+            <div class="field">
+              <label>每个账号每天最多发几条</label>
+              <input type="number" min="0" step="1" id="s-daily-limit">
+              <div class="hint">填 0 表示不限。按下面的时区算"一天"，发够就停，第二天当地0点自动刷新。</div>
+            </div>
+            <div class="field">
+              <label>时区</label>
+              <!-- 选项由 app.js 的 populateTimezones() 动态生成：常用跨境地区置顶 + 完整IANA列表 -->
+              <select id="s-timezone"></select>
+              <div class="hint">做哪个地区就选哪个地区的时区，额度和发布时段都按当地时间算。</div>
+            </div>
+            <div class="field span2">
+              <label><input type="checkbox" id="s-window-enabled"> 只在指定时间段内发布</label>
+              <div class="hint">
+                额度是按当地0点刷新的，但"刚过0点有额度"不代表这时候该发——文件夹里堆着视频的话，
+                不开这个会变成凌晨几点连发好几条，没有真人会这样发。开着的话，时段之外攒着的额度不会丢，等时段开始接着发。
+              </div>
+            </div>
+            <div class="field">
+              <label>几点开始（当地时间，24小时制）</label>
+              <input type="number" min="0" max="23" step="1" id="s-window-start">
+            </div>
+            <div class="field">
+              <label>几点结束（24=到午夜）</label>
+              <input type="number" min="1" max="24" step="1" id="s-window-end">
             </div>
           </div>
-          <div class="field span2">
-            <label><input type="checkbox" id="s-delete-after-publish"> 确认发布成功后，把源视频文件移到回收站</label>
-            <div class="hint">
-              开着的话，文件夹本身就是"待发布清单"：里面还有视频=没发完，空了就该加新的，不用再对照进度列表。
-              只在真正确认发布成功那一刻才移（不确定/失败/暂停都不会动）——是移到回收站，不是永久删除，误删还能捞回来。
+        </div>
+
+        <div class="group">
+          <h3>发布完之后做什么</h3>
+          <div class="form-grid">
+            <div class="field span2">
+              <label><input type="checkbox" id="s-close-profile"> 这一条处理完就关掉该账号的指纹浏览器窗口</label>
+              <div class="hint">
+                一个开着的窗口要占一千多MB内存，账号多了电脑会很吃力。开着这项的话，每条视频处理完
+                （成功、失败、或者结果不确定都算）就把窗口关掉，下一条到点了再重新开。
+                关窗口不影响登录状态和指纹——那些是指纹浏览器自己存着的，重开还是原样。
+              </div>
+            </div>
+            <div class="field span2">
+              <label><input type="checkbox" id="s-delete-after-publish"> 确认发布成功后，把源视频文件移到回收站</label>
+              <div class="hint">
+                开着的话，文件夹本身就是"待发布清单"：里面还有视频=没发完，空了就该加新的，不用再对照进度列表。
+                只在真正确认发布成功那一刻才移（不确定/失败/暂停都不会动）——是移到回收站，不是永久删除，误删还能捞回来。
+              </div>
             </div>
           </div>
         </div>
