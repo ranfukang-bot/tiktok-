@@ -199,13 +199,15 @@ button:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
 
 /* ===================== 主体骨架 ===================== */
 
+/* 宽屏是主场景(桌面端运营台)，1080px 会让两边空掉一大片、
+   卡片横跨近千像素只装三行字，眼睛得横扫才能把账号和状态对上。 */
 main {
-  max-width: 1080px;
+  max-width: 1440px;
   margin: 0 auto;
-  padding: var(--s6) var(--s6) var(--s8);
+  padding: var(--s5) var(--s6) var(--s8);
   display: flex;
   flex-direction: column;
-  gap: var(--s5);
+  gap: var(--s4);
 }
 
 section.card {
@@ -259,13 +261,13 @@ section.card {
   letter-spacing: .02em;
 }
 .stat .v {
-  font-size: 25px;
-  font-weight: 680;
-  letter-spacing: -.02em;
-  line-height: 1.2;
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -.03em;
+  line-height: 1.15;
   font-variant-numeric: tabular-nums;
 }
-.stat .v small { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 2px; }
+.stat .v small { font-size: 15px; font-weight: 500; color: var(--muted); margin-left: 3px; }
 
 /* 只有"需要你处理"这一格会变红——颜色留给真正要注意的东西 */
 .stat.alert { border-color: color-mix(in srgb, var(--red) 40%, transparent); background: var(--red-bg); }
@@ -277,14 +279,21 @@ section.card {
 
 /* ===================== 账号卡片 ===================== */
 
-#accounts-list { display: flex; flex-direction: column; gap: var(--s3); }
+/* 宽屏排两列：账号名和状态之间的距离减半，一屏能看的账号翻倍。
+   窄屏自动退回一列。 */
+#accounts-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(500px, 1fr));
+  gap: var(--s3);
+  align-items: start;
+}
 
 .account-card {
   position: relative;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
-  padding: var(--s3) var(--s4) var(--s3) var(--s5);
+  padding: var(--s3) var(--s3) var(--s3) var(--s4);
   overflow: hidden;
   transition: border-color .15s, box-shadow .15s;
 }
@@ -326,10 +335,13 @@ section.card {
   color: var(--muted);
 }
 .ac-meta .sep { color: var(--border-strong); }
-.account-card .folder {
+/* 路径单独一行、最弱化：它是"确认没配错"时才看的，不是每天要读的 */
+.account-card .ac-path {
+  margin-top: 2px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11.5px;
-  max-width: 340px;
+  font-size: 11px;
+  color: var(--muted);
+  opacity: .75;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -415,19 +427,39 @@ details[open] > summary::after { transform: rotate(-135deg) translate(-1px, -1px
 details[open] > summary { margin-bottom: var(--s5); }
 details > summary:focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-sm); }
 
-/* 设置里的分组：给每一块一个标题，不再是一大片一模一样的输入框 */
-.group { margin-bottom: var(--s5); }
+/* 设置里的分组。
+   第一版只给了个小灰标题+一条细线，太轻了——用户反馈"跟之前一模一样"，
+   因为视觉上还是一长条输入框，没形成"块"。现在每组是独立面板：
+   有自己的底色、边框、和带色条的标题，隔着屏幕也能看出是几块东西。 */
+.group {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--s4);
+  margin-bottom: var(--s3);
+}
 .group:last-of-type { margin-bottom: 0; }
 .group > h3 {
-  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: 13.5px;
   font-weight: 650;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  color: var(--muted);
-  margin: 0 0 var(--s3);
-  padding-bottom: var(--s2);
-  border-bottom: 1px solid var(--border);
+  letter-spacing: -.01em;
+  color: var(--text);
+  margin: 0 0 var(--s4);
 }
+/* 标题前的小色条，让每块有个明确的起点 */
+.group > h3::before {
+  content: "";
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--accent);
+  flex: none;
+}
+/* 分组里的输入框用纯白(暗色下是最深那层)，跟面板底色拉开，看着才像"可以填的地方" */
+.group .field input, .group .field select { background: var(--surface); }
 
 .form-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--s4); }
 .form-grid.narrow { grid-template-columns: 1fr; }
@@ -478,22 +510,6 @@ details > summary:focus-visible { outline: none; box-shadow: var(--ring); border
   accent-color: var(--accent);
   cursor: pointer;
   flex: none;
-}
-
-fieldset {
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  margin: 0 0 var(--s4);
-  padding: var(--s4);
-  background: var(--surface-2);
-}
-fieldset legend {
-  font-size: 12px;
-  font-weight: 650;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-  color: var(--muted);
-  padding: 0 var(--s2);
 }
 
 .form-actions {

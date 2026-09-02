@@ -112,8 +112,8 @@
           </div>
         </div>
 
-        <fieldset>
-          <legend>出问题时通知我</legend>
+        <div class="group">
+          <h3>出问题时通知我</h3>
           <div class="hint" style="margin-bottom:10px;">
             只有真正需要你处理的时候才会推送（比如发布结果不确定、配置填错了）。
             页面超时、指纹浏览器没开这类临时问题会自己重试，不打扰你。
@@ -169,10 +169,10 @@
             <button type="button" id="btn-test-notify">发送一条测试通知</button>
             <span class="hint" style="margin-left:8px;">先"保存全局设置"，再点这个测试</span>
           </div>
-        </fieldset>
+        </div>
 
-        <fieldset>
-          <legend>比特浏览器 BitBrowser 连接设置</legend>
+        <div class="group">
+          <h3>比特浏览器 BitBrowser 连接设置</h3>
           <div class="form-grid">
             <div class="field">
               <label>本地API地址</label>
@@ -180,10 +180,10 @@
               <div class="hint">在比特浏览器客户端"系统设置"里能看到，默认一般是 http://127.0.0.1:54345。</div>
             </div>
           </div>
-        </fieldset>
+        </div>
 
-        <fieldset>
-          <legend>AdsPower 连接设置</legend>
+        <div class="group">
+          <h3>AdsPower 连接设置</h3>
           <div class="form-grid">
             <div class="field">
               <label>本地API地址</label>
@@ -194,10 +194,10 @@
               <input type="text" id="s-ads-apikey">
             </div>
           </div>
-        </fieldset>
+        </div>
 
-        <fieldset>
-          <legend>Hubstudio 连接设置</legend>
+        <div class="group">
+          <h3>Hubstudio 连接设置</h3>
           <div class="form-grid">
             <div class="field">
               <label>本地API地址</label>
@@ -229,7 +229,7 @@
               </div>
             </div>
           </details>
-        </fieldset>
+        </div>
 
         <div class="form-actions">
           <button type="submit" class="primary">保存全局设置</button>
@@ -287,14 +287,14 @@
         </div>
       </div>
 
-      <fieldset>
-        <legend>TikTok Studio 通用识别</legend>
+      <div class="group">
+        <h3>TikTok Studio 通用识别</h3>
         <div class="hint">
           自动按页面结构识别上传、商品、AI声明、立即发布和检查结果，<b>无需选择国家或填写界面翻译</b>。
           只有音乐版权和内容检查两项都明确通过才发布；红色、检查未完成、检查关闭或未知结构都会停止。
           <br>页面改版或账号缺少商品橱窗等功能时会报错暂停，不会猜按钮、不会跳过检查。
         </div>
-      </fieldset>
+      </div>
 
       <div class="modal-actions">
         <button type="button" id="a-delete-btn" class="danger" style="display:none;">删除这个账号</button>

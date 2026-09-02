@@ -128,21 +128,21 @@ function renderAccounts() {
       stateHtml = `<span class="state paused">已暂停</span>`;
       edge = 'bad';
     } else if (runtime.retryAt && runtime.retryAt > Date.now()) {
-      stateHtml = `<span class="state processing">出错重试中，${fmtRemaining(runtime.retryAt - Date.now())}</span>`;
+      stateHtml = `<span class="state processing">重试中 ${fmtRemaining(runtime.retryAt - Date.now())}</span>`;
       edge = 'warn';
     } else if (runtime.quotaExhausted) {
       const tz = runtime.timezone || 'Asia/Jakarta';
-      stateHtml = `<span class="state paused">今日额度用完(${runtime.publishedToday}/${runtime.dailyLimit})，等 ${escapeHtml(tz)} 的明天</span>`;
+      stateHtml = `<span class="state off" title="按 ${escapeAttr(tz)} 的时间算，过了当地0点自动刷新">今日额度已满 ${runtime.publishedToday}/${runtime.dailyLimit}</span>`;
       edge = 'idle';
     } else if (runtime.inPostingWindow === false) {
       const wait = runtime.nextWindowStart ? fmtRemaining(runtime.nextWindowStart - Date.now()) : '';
-      stateHtml = `<span class="state paused">不在允许发布的时间段内，还要等${wait ? ' ' + wait : ''}</span>`;
+      stateHtml = `<span class="state off" title="只在设置里指定的时间段内发布">未到发布时段${wait ? '，还要等 ' + wait : ''}</span>`;
       edge = 'idle';
     } else if (runtime.total === 0) {
-      stateHtml = `<span class="state paused">还没检测到视频，点"立即扫描"看看</span>`;
+      stateHtml = `<span class="state processing">文件夹里没有视频</span>`;
       edge = 'warn';
     } else if (runtime.remaining === 0) {
-      stateHtml = `<span class="state ok">队列已跑完，等待新视频</span>`;
+      stateHtml = `<span class="state ok">已发完，等新视频</span>`;
       edge = 'ok';
     } else {
       stateHtml = `<span class="state ok">${fmtRemaining(runtime.nextTime - Date.now())}后发下一条</span>`;
@@ -184,9 +184,8 @@ function renderAccounts() {
       <div class="ac-meta">
         ${progressHtml}
         ${quotaBadge}
-        ${progressHtml || quotaBadge ? '<span class="sep">·</span>' : ''}
-        <span class="folder" title="${escapeAttr(account.videoFolder)}">${escapeHtml(account.videoFolder)}</span>
       </div>
+      <div class="ac-path" title="${escapeAttr(account.videoFolder)}">${escapeHtml(account.videoFolder)}</div>
       <div class="actions">${actions.join('')}</div>
       ${runtime && runtime.paused && runtime.pauseReason ? `<div class="reason">${escapeHtml(runtime.pauseReason)}</div>` : ''}
       ${runtime && !runtime.paused && runtime.retryAt && runtime.retryAt > Date.now() && runtime.lastError
