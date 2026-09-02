@@ -104,6 +104,9 @@ async function processAccountOnce(account, settings, adapter, log) {
 
   // 一旦置为true，说明这轮已经可能点过发布按钮了，任何后续错误都不许自动重试
   let publishAttempted = false;
+  // 只有确认发布成功才关窗口。别的情况(报错、结果不确定)都要把窗口留着——
+  // 那些情况的处理办法就是"人去打开这个号看一眼"，窗口关了就没得看了。
+  let publishConfirmed = false;
 
   const { wsEndpoint } = await adapter.startProfile(account);
   const browser = await chromium.connectOverCDP(wsEndpoint);
@@ -138,6 +141,7 @@ async function processAccountOnce(account, settings, adapter, log) {
 
     const latest = getState(account.name);
     if (result.published) {
+      publishConfirmed = true;
       latest.doneIndex = nextIdx;
       latest.pendingIndex = null;
       latest.pendingSince = null;
@@ -173,14 +177,25 @@ async function processAccountOnce(account, settings, adapter, log) {
     // 顺序不能反：browser.close() 只是断开我们这端的连接，窗口还开着，
     // 真正释放那一千多MB内存的是 stopProfile。
     await browser.close().catch(() => {});
+
+    // ⚠️ 这个 finally 里【绝对不能用 return】：finally 里的 return 会把正在往上抛的
+    // 异常整个吞掉，报错就再也传不到 handleAccountError，账号既不会暂停也不会通知你。
+    // 所以下面全用 if/else 分支。
     if (settings.closeProfileAfterCycle !== false) {
-      try {
-        await adapter.stopProfile(account);
-        log.info('已关闭该账号的指纹浏览器窗口，释放内存');
-      } catch (err) {
-        // 关不掉不影响这一条的发布结果，下一轮开窗口时指纹浏览器会自己处理已开着的环境，
-        // 所以只提醒一句，不按失败处理、更不能因此把账号暂停。
-        log.warn(`关闭指纹浏览器环境失败(不影响发布结果): ${err.message}`);
+      if (!publishConfirmed) {
+        // 只在确认发布成功之后才关。出错、或者发布结果不确定的时候，处理办法本来就是
+        // "人打开这个号去看一眼"(看内容列表到底发出去没有、看是不是哪个检查开关被关了)，
+        // 这时候关掉窗口等于把人要看的东西收走了。留着的那一千多MB是值的。
+        log.info('这一轮没有确认发布成功，保留指纹浏览器窗口，方便你打开看一眼');
+      } else {
+        try {
+          await adapter.stopProfile(account);
+          log.info('已关闭该账号的指纹浏览器窗口，释放内存');
+        } catch (err) {
+          // 关不掉不影响这一条的发布结果，下一轮开窗口时指纹浏览器会自己处理已开着的环境，
+          // 所以只提醒一句，不按失败处理、更不能因此把账号暂停。
+          log.warn(`关闭指纹浏览器环境失败(不影响发布结果): ${err.message}`);
+        }
       }
     }
   }
