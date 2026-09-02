@@ -571,6 +571,27 @@ export function installTkqInPage(config) {
     return state;
   }
 
+  // 检查开关偶尔会是关着的——有时是页面还没渲染完就被读到，有时是TikTok自己抽风。
+  // 这种情况不该叫人来处理：把开关打开、让它重新跑一遍检查就行，这跟"检查没通过"
+  // 完全是两回事。注意只做【打开】这一个方向，绝不会去关任何检查开关。
+  async function tryEnableCheck(name) {
+    const root = getCheckRoots()[name];
+    if (!root || !isVisible(root)) return false;
+    const input = root.querySelector('input[role="switch"]');
+    if (!input || !isEnabled(input)) return false;
+    log(`${name} 检查开关是关着的，尝试自动打开…`);
+    fireClick(input);
+    // 打开后页面要重新跑这项检查，这里只等开关本身变成打开状态，
+    // 检查结果由外层那个等双绿的循环继续等。
+    const ok = await waitForOrNull(() => {
+      const current = getCheckRoots()[name];
+      const el = current && current.querySelector('input[role="switch"]');
+      return switchIsOn(el) ? true : null;
+    }, 4000, 150);
+    if (ok) log(`${name} 检查开关已打开，等它重新跑一遍`);
+    return Boolean(ok);
+  }
+
   function getPostButton() {
     return uniqueVisible(document, '[data-e2e="post_video_button"]', '最终发布按钮');
   }
@@ -581,6 +602,7 @@ export function installTkqInPage(config) {
     const deadline = Date.now() + timeoutMs;
     let passedSince = null;
     let previous = '';
+    const enableTried = new Set(); // 每个开关只自动打开一次，避免跟页面来回拉锯
     while (Date.now() < deadline) {
       checkForAppCrash();
       assertProductPickerClosed('等待发布前检查');
@@ -590,8 +612,30 @@ export function installTkqInPage(config) {
         log('检查状态: ' + checkSummary(state));
         previous = signature;
       }
-      if (state.checks.some((check) => check.state === 'blocked' || check.state === 'disabled')) {
+
+      // 红/黄是真的没通过，立刻停——这条视频本身有问题，重试多少次都一样。
+      if (state.checks.some((check) => check.state === 'blocked')) {
         throw new Error('发布安全检查未通过：' + checkSummary(state));
+      }
+
+      // 开关被关掉是另一回事：不是内容有问题，是这项检查压根没跑。
+      // 先自己把它打开重跑一遍；打不开才算真出事，而且归到"可以重试"那一类，
+      // 因为下一轮是从全新页面重来的，多半就正常了。
+      const off = state.checks.filter((check) => check.state === 'disabled');
+      if (off.length) {
+        for (const check of off) {
+          if (enableTried.has(check.name)) {
+            throw new Error(
+              `版权检查开关处于关闭状态，已尝试自动打开但没成功（${check.name}）。` +
+                '这项检查没跑就不能发，稍后会自动重开页面再试一次'
+            );
+          }
+          enableTried.add(check.name);
+          await tryEnableCheck(check.name);
+        }
+        previous = ''; // 状态变了，下一轮重新打一次日志
+        await sleep(500);
+        continue;
       }
       const button = getPostButton();
       if (state.passed && button && isEnabled(button)) {

@@ -51,6 +51,11 @@ const TRANSIENT_PATTERNS = [
   /ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|ENOTFOUND/,
   /fetch failed/i,
   /Target (page|closed)|Session closed|browser has been closed/i,
+  // 检查开关被关掉、且自动打开也没成功：这不是"内容没通过"，是这项检查压根没跑。
+  // 下一轮是从全新页面重来的，多半就正常了，所以按临时故障重试，别一上来就叫人。
+  // 注意这条消息【故意不含】"发布安全检查未通过"——那句话是留给真的红/黄结果的，
+  // 而 CONTENT_PATTERNS 在分类顺序上排在前面，混进去就会被判成不可重试。
+  /版权检查开关处于关闭状态/,
   /Draft\.js没有稳定清空/,
   /找不到可见的文案编辑框/,
   /话题标签.*重复出现/,

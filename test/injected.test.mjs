@@ -142,6 +142,58 @@ for (const variation of ['disabled', 'missing', 'ancestor-hidden', 'data-show-fa
   });
 }
 
+// 检查开关偶尔会莫名其妙是关着的(页面没渲染完就被读到、或者TikTok自己抽风)。
+// 这不是"内容没通过"，不该叫人来处理——自己把开关打开重跑一遍就行。
+// 但这里有条不能松的线：只做【打开】这一个方向，而且真的红/黄必须照样拦住。
+async function turnCheckOff(area, { stuck = false } = {}) {
+  await page.evaluate(([area, stuck]) => {
+    const root = document.querySelector(area === 'music' ? '.copyright-check' : '.content-check');
+    const wrap = root.querySelector('[data-state]');
+    const input = root.querySelector('input[role="switch"]');
+    wrap.dataset.state = 'unchecked';
+    input.checked = false;
+    input.onclick = stuck
+      ? (e) => { e.preventDefault(); input.checked = false; }        // 点了也打不开
+      : () => { input.checked = true; wrap.dataset.state = 'checked'; }; // 真实页面的行为
+  }, [area, stuck]);
+}
+
+for (const area of ['music', 'content']) {
+  test(`${area} 检查开关被关掉时自动打开重跑，不打扰人`, async () => {
+    await fresh();
+    await turnCheckOff(area);
+    const result = await page.evaluate(() =>
+      window.__tkq.waitForChecksPassAndAssertSafe(8000).then(() => 'ok', (e) => e.message));
+    assert.equal(result, 'ok', '开关自动打开后应该正常通过');
+    const on = await page.evaluate((area) => {
+      const sel = area === 'music' ? '.copyright-check' : '.content-check';
+      return document.querySelector(sel + ' input[role="switch"]').checked;
+    }, area);
+    assert.equal(on, true, '开关应该被打开');
+  });
+}
+
+test('开关卡住打不开时停下，并且报成可以重试的那类错', async () => {
+  await fresh();
+  await turnCheckOff('music', { stuck: true });
+  const result = await page.evaluate(() =>
+    window.__tkq.waitForChecksPassAndAssertSafe(8000).then(() => 'PUBLISHED', (e) => e.message));
+  assert.notEqual(result, 'PUBLISHED', '检查没跑就绝不能放行');
+  assert.match(result, /版权检查开关处于关闭状态/);
+  // 这句话如果混进去，errorPolicy 会按 CONTENT_PATTERNS 判成永不重试，
+  // 那就又变回"每次抽风都要人来点一下"了
+  assert.doesNotMatch(result, /发布安全检查未通过/, '不能落进不可重试那一类');
+});
+
+test('真的红色结果不会被当成开关问题放过', async () => {
+  await fresh();
+  await setState('content', 'warn');
+  const result = await page.evaluate(() =>
+    window.__tkq.waitForChecksPassAndAssertSafe(5000).then(() => 'PUBLISHED', (e) => e.message));
+  assert.notEqual(result, 'PUBLISHED');
+  assert.match(result, /发布安全检查未通过/, '内容判红必须走不可重试那条路');
+});
+
 test('上传99%或未知结构不能算完成，不读完成提示文案', async () => {
   await fresh();
   assert.equal(await page.evaluate(() => window.__tkq.getUploadState().state), 'success');
