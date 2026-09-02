@@ -17,6 +17,8 @@
   ],
   "_deleteAfterPublish说明": "确认发布成功后，是否把源视频文件移到回收站。开着的话文件夹本身就是待发布清单：夹子里还有视频=没发完，没了就该加新的。只在真正确认发布成功的那一刻才会移（不确定/失败/暂停都不会动文件）。是移到回收站不是永久删除，误删还能捞回来。",
   "deleteAfterPublish": true,
+  "_closeProfileAfterCycle说明": "每处理完一条视频(不管成功、失败还是结果不确定)，是否让指纹浏览器把该账号的窗口关掉。一个开着的窗口要占一千多MB内存，账号多了电脑扛不住。下一条到点了会重新开，登录状态和指纹都是指纹浏览器自己存着的，重开还是原样。设为 false 就一直开着不关。",
+  "closeProfileAfterCycle": true,
   "_quota说明": "每个账号每天最多发几条，按 timezone 指定的时区算一天的边界，超过就停下等第二天当地0点自动刷新额度。dailyPublishLimit 填0表示不限制。timezone 支持任意 IANA 时区（网页上有完整下拉可选），做哪个地区就填哪个地区的时区。",
   "dailyPublishLimit": 4,
   "timezone": "Asia/Jakarta",

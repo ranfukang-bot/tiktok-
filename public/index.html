@@ -78,6 +78,14 @@
             <input type="number" min="1" max="24" step="1" id="s-window-end">
           </div>
           <div class="field span2">
+            <label><input type="checkbox" id="s-close-profile"> 这一条处理完就关掉该账号的指纹浏览器窗口</label>
+            <div class="hint">
+              一个开着的窗口要占一千多MB内存，账号多了电脑会很吃力。开着这项的话，每条视频处理完
+              （成功、失败、或者结果不确定都算）就把窗口关掉，下一条到点了再重新开。
+              关窗口不影响登录状态和指纹——那些是指纹浏览器自己存着的，重开还是原样。
+            </div>
+          </div>
+          <div class="field span2">
             <label><input type="checkbox" id="s-delete-after-publish"> 确认发布成功后，把源视频文件移到回收站</label>
             <div class="hint">
               开着的话，文件夹本身就是"待发布清单"：里面还有视频=没发完，空了就该加新的，不用再对照进度列表。

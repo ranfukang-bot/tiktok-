@@ -169,9 +169,19 @@ async function processAccountOnce(account, settings, adapter, log) {
       });
     }
   } finally {
+    // 先断开CDP连接，再让指纹浏览器客户端把这个环境正经关掉。
+    // 顺序不能反：browser.close() 只是断开我们这端的连接，窗口还开着，
+    // 真正释放那一千多MB内存的是 stopProfile。
     await browser.close().catch(() => {});
-    if (settings.closeProfileAfterCycle) {
-      await adapter.stopProfile(account).catch((err) => log.warn(`关闭指纹浏览器环境失败: ${err.message}`));
+    if (settings.closeProfileAfterCycle !== false) {
+      try {
+        await adapter.stopProfile(account);
+        log.info('已关闭该账号的指纹浏览器窗口，释放内存');
+      } catch (err) {
+        // 关不掉不影响这一条的发布结果，下一轮开窗口时指纹浏览器会自己处理已开着的环境，
+        // 所以只提醒一句，不按失败处理、更不能因此把账号暂停。
+        log.warn(`关闭指纹浏览器环境失败(不影响发布结果): ${err.message}`);
+      }
     }
   }
 }

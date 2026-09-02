@@ -377,6 +377,7 @@ function fillSettingsForm(settings) {
   document.getElementById('s-concurrency').value = settings.concurrency || 1;
   document.getElementById('s-scan-seconds').value = Math.round((settings.folderScanIntervalMs || 30000) / 1000);
   document.getElementById('s-delete-after-publish').checked = settings.deleteAfterPublish !== false;
+  document.getElementById('s-close-profile').checked = settings.closeProfileAfterCycle !== false;
   document.getElementById('s-daily-limit').value = settings.dailyPublishLimit ?? 0;
   document.getElementById('s-timezone').value = settings.timezone || 'Asia/Jakarta';
 
@@ -419,6 +420,7 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
   settings.concurrency = Number(document.getElementById('s-concurrency').value);
   settings.folderScanIntervalMs = Number(document.getElementById('s-scan-seconds').value) * 1000;
   settings.deleteAfterPublish = document.getElementById('s-delete-after-publish').checked;
+  settings.closeProfileAfterCycle = document.getElementById('s-close-profile').checked;
   settings.dailyPublishLimit = Number(document.getElementById('s-daily-limit').value) || 0;
   settings.timezone = document.getElementById('s-timezone').value;
   settings.postingWindow = {
