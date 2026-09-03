@@ -502,11 +502,15 @@ export function installTkqInPage(config) {
       return getWorkflowStage(modal) === 'name' ? modal : null;
     }, 20000);
     const nameInput = nameModal.querySelector('.common-modal-body input[type="text"]');
-    const anchorName = nameInput.value.trim();
-    // TikTok会把商品名称截断；确认它确实来自刚选中的商品，不能确认其它弹窗。
-    if (!anchorName || !productName.startsWith(anchorName) || nameInput.getAttribute('aria-invalid') === 'true') {
+    const prefilled = nameInput.value.trim();
+    // 身份校验必须在【清理之前】用原始预填值做：TikTok会把商品名截断，但截断后
+    // 仍然是商品名的前缀。清理过之后就不再是前缀了，所以顺序不能反。
+    if (!prefilled || !productName.startsWith(prefilled)) {
       throw new Error('商品确认名称与所选商品不一致，已停止挂车');
     }
+    // 名字里有 TikTok 不接受的字符时，照着页面报的把那些字符去掉再继续。
+    // 只改显示用的锚点名称，挂哪个商品是前面按ID选定的，不受影响。
+    const anchorName = await fixInvalidAnchorName(nameModal, nameInput);
     fireClick(await waitFor(() => getWorkflowAction(getTopModal(), 'name'), 10000));
     await waitFor(() => {
       if (getVisibleModalRoots().length) return false;
@@ -515,6 +519,76 @@ export function installTkqInPage(config) {
     attachedProduct = { productId, anchorName };
     log('商品链接添加完成并已核对锚点: ' + productId);
     return { ...attachedProduct };
+  }
+
+  // TikTok 会拿商品名预填这个"锚点名称"，但有些商品名带它自己不接受的字符
+  // （见过 – 和 丨，肯定还有别的）。这时候确认按钮一直不可用，流程就卡死在这里。
+  //
+  // 不去猜"哪些字符非法"——那是维护不完的黑名单。页面自己会把它认为非法的字符
+  // 列出来（"Remove invalid characters: –"），照着它说的删就行，以后 TikTok 新增
+  // 什么字符也照样管用。
+  //
+  // 这么改是安全的：商品是靠【商品ID精确搜索+选中】定下来的，这个名称框只是
+  // 视频上显示的标签，改它不会挂错商品。
+  function getNameFieldError(nameModal) {
+    // 报错文字是用危险色渲染的，这个信号跟界面语言无关
+    const nodes = Array.from(nameModal.querySelectorAll(
+      '[style*="--ui-text-danger"], [class*="error"], [class*="invalid"], [role="alert"]'
+    )).filter(isVisible);
+    return nodes.map((el) => (el.innerText || el.textContent || '').trim()).filter(Boolean).join(' ');
+  }
+
+  function setInputValue(input, value) {
+    // React 受控组件必须走原生 setter 再派发 input 事件，直接改 .value 不会更新它的状态
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  // 从报错文字里取出被点名的字符。冒号后面那段就是它列出来的非法字符，
+  // 只从【当前输入值里真实存在】的字符里挑，避免把提示语本身的字母误当成非法字符。
+  function parseInvalidChars(errorText, currentValue) {
+    if (!errorText) return [];
+    const tail = errorText.split(/[:：]/).slice(1).join(':');
+    const present = new Set(currentValue);
+    const picked = new Set();
+    for (const ch of tail) {
+      if (/[\s,，、]/.test(ch)) continue;
+      if (present.has(ch)) picked.add(ch);
+    }
+    return [...picked];
+  }
+
+  async function fixInvalidAnchorName(nameModal, nameInput) {
+    const original = nameInput.value;
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      // 按钮可用就说明这个名字已经被接受了，不用再动
+      if (getWorkflowAction(getTopModal(), 'name')) return nameInput.value.trim();
+
+      const errorText = getNameFieldError(nameModal);
+      const bad = parseInvalidChars(errorText, nameInput.value);
+      if (!bad.length) {
+        // 页面没点名任何字符：可能只是还在校验，等一下再看
+        await sleep(400);
+        if (getWorkflowAction(getTopModal(), 'name')) return nameInput.value.trim();
+        throw new Error(
+          `商品锚点名称不被接受，但页面没有说明是哪个字符有问题（当前名称：${nameInput.value}${errorText ? '，提示：' + errorText : ''}）。` +
+            '需要人工打开这个账号手动改一下名称'
+        );
+      }
+
+      const cleaned = [...nameInput.value].filter((ch) => !bad.includes(ch)).join('').replace(/\s+/g, ' ').trim();
+      if (!cleaned) {
+        throw new Error(`商品锚点名称里的字符被 TikTok 全部判为非法（原名：${original}），需要人工处理`);
+      }
+      log(`商品锚点名称含 TikTok 不接受的字符 ${bad.map((c) => JSON.stringify(c)).join(' ')}，自动去掉后重试（第${attempt}次）`);
+      setInputValue(nameInput, cleaned);
+      await sleep(500);
+    }
+    throw new Error(
+      `商品锚点名称清理了5次仍然不被接受（原名：${original}，当前：${nameInput.value}），需要人工处理`
+    );
   }
 
   // ===== 发布时间 / AI声明 =====
@@ -805,6 +879,8 @@ export function installTkqInPage(config) {
     confirmHashtagInserted,
     finalizeCaption,
     addProductLink,
+    parseInvalidChars,
+    fixInvalidAnchorName,
     setAiDisclosure,
     setPublishNow,
     waitForChecksPassAndAssertSafe,

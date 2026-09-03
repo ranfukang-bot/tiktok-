@@ -51,8 +51,14 @@ async function setState(area, state) {
   }, [area, state]);
 }
 
-async function mockProductWorkflow() {
-  await page.evaluate(() => {
+// opts 用来仿真"商品名里带 TikTok 不接受的字符"这种情况：
+//   productName 表格里的商品名、prefill 名称框里被预填的值、badChars 页面判为非法的字符。
+// 不传就是原来的正常商品，已有用例一行都不用改。
+async function mockProductWorkflow(opts = {}) {
+  await page.evaluate((opts) => {
+    const productName = opts.productName || 'Test product name';
+    const prefill = opts.prefill || 'Test product';
+    const badChars = opts.badChars || [];
     const button = (type) => '<button class="TUXButton--' + type + '">任意语言</button>';
     const footer = () => '<div class="common-modal-footer">' + button('secondary') + button('primary') + '</div>';
     const show = (cls, html) => {
@@ -65,20 +71,65 @@ async function mockProductWorkflow() {
         type.classList.add('no-mask-modal');
         const select = show('product-selector-modal', '<div class="product-selector-container">' +
           '<div class="product-search-input"><input type="text"></div><button class="product-search-icon">?</button>' +
-          '<table class="product-table"><tbody><tr><td><input type="radio"><span class="product-name">Test product name</span></td><td class="product-tb-cell">10000000000001</td></tr></tbody></table></div>' + footer());
+          '<table class="product-table"><tbody><tr><td><input type="radio"><span class="product-name">' + productName + '</span></td><td class="product-tb-cell">10000000000001</td></tr></tbody></table></div>' + footer());
         const next = select.querySelector('.TUXButton--primary'); next.disabled = true;
         select.querySelector('input[type=radio]').onchange = () => { next.disabled = false; };
         next.onclick = () => {
           select.remove();
-          const name = show('', '<div class="common-modal-body"><input type="text" value="Test product"><div class="TUXFormField-wordCount">12/30</div></div>' + footer());
-          name.querySelector('.TUXButton--primary').onclick = () => {
+          const name = show('', '<div class="common-modal-body"><input type="text">' +
+            '<div class="err" style="color:var(--ui-text-danger);height:16px"></div>' +
+            '<div class="TUXFormField-wordCount">12/30</div></div>' + footer());
+          const nameInput = name.querySelector('input'), err = name.querySelector('.err');
+          const confirm = name.querySelector('.TUXButton--primary');
+          // 跟真实页面一样：非法字符 → 红字点名 + 主按钮禁用；删干净了才放行。
+          const validate = () => {
+            const hit = [...new Set([...nameInput.value])].filter((c) => badChars.includes(c));
+            err.textContent = hit.length ? 'Remove invalid characters: ' + hit.join(' ') : '';
+            confirm.disabled = hit.length > 0;
+          };
+          nameInput.addEventListener('input', validate);
+          nameInput.value = prefill; validate();
+          confirm.onclick = () => {
+            const finalName = nameInput.value.trim();
             type.remove(); name.remove();
             const anchor = document.createElement('div'); anchor.className = 'anchor-container';
-            anchor.innerHTML = '<span class="content-anchor-label">Test product</span>'; document.body.append(anchor);
+            anchor.innerHTML = '<span class="content-anchor-label">' + finalName + '</span>'; document.body.append(anchor);
           };
         };
       };
     };
+  }, opts);
+}
+
+// 直接驱动名称框：把弹窗和"哪些字符非法"喂进去，拿到 fixInvalidAnchorName 的结果。
+async function runNameFix({ prefill, badChars = [], staticError = null }) {
+  await page.setContent('<style>:root{--ui-text-danger:red}[role="dialog"]{position:fixed;inset:10px;background:white;border:1px solid}' +
+    'input{width:300px;height:24px}button{min-width:40px;min-height:25px}</style>' +
+    '<div role="dialog" class="TUXModal common-modal"><div class="common-modal-body"><input type="text">' +
+    '<div class="err" style="color:var(--ui-text-danger);height:16px"></div>' +
+    '<div class="TUXFormField-wordCount">12/30</div></div>' +
+    '<div class="common-modal-footer"><button class="TUXButton--primary">任意语言</button></div></div>');
+  await page.evaluate(({ prefill, badChars, staticError }) => {
+    const input = document.querySelector('input'), err = document.querySelector('.err');
+    const btn = document.querySelector('.TUXButton--primary');
+    if (staticError) {
+      // 页面只说"名称不合法"，不点名是哪个字符，怎么改都不放行
+      err.textContent = staticError; btn.disabled = true; input.value = prefill;
+    } else {
+      const validate = () => {
+        const hit = [...new Set([...input.value])].filter((c) => badChars.includes(c));
+        err.textContent = hit.length ? 'Remove invalid characters: ' + hit.join(' ') : '';
+        btn.disabled = hit.length > 0;
+      };
+      input.addEventListener('input', validate);
+      input.value = prefill; validate();
+    }
+  }, { prefill, badChars, staticError });
+  await page.evaluate(installTkqInPage, { text: {}, hashtagKeywords: [] });
+  return page.evaluate(() => {
+    const modal = document.querySelector('[role="dialog"]'), input = modal.querySelector('input');
+    return window.__tkq.fixInvalidAnchorName(modal, input)
+      .then((name) => ({ ok: true, name }), (e) => ({ ok: false, msg: e.message }));
   });
 }
 
@@ -344,6 +395,74 @@ for (const known of [true, false]) {
     }
   });
 }
+
+// 挂车时 TikTok 会拿商品名预填一个"锚点名称"，有些商品名里带它自己不接受的字符
+// （实际遇到过 – 和 丨），主按钮就一直是灰的，整轮卡死在"等待元素超时"。
+// 页面自己会红字点名是哪个字符，照着删就行 —— 比在代码里维护一张非法字符黑名单靠谱，
+// 以后 TikTok 再新增什么字符也照样管用。改这个名称不会挂错商品：商品是靠上一步的
+// 精确商品ID选中的，这个框只是视频上显示的标签。
+for (const [label, prefill, badChars, expected] of [
+  ['实际遇到的 en dash', 'Canned Beef 150g – Rea', ['–'], 'Canned Beef 150g Rea'],
+  ['实际遇到的 丨', 'Minyak Oles 丨 Original', ['丨'], 'Minyak Oles Original'],
+  ['没见过的字符也能修(不靠黑名单)', 'Serum ★ Glow ☆ 30ml', ['★', '☆'], 'Serum Glow 30ml'],
+  ['本来就合法的名称原样不动', 'Canned Beef 150g Rea', ['–'], 'Canned Beef 150g Rea'],
+]) {
+  test('商品锚点名称非法字符：' + label, async () => {
+    const r = await runNameFix({ prefill, badChars });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.name, expected);
+  });
+}
+
+test('商品锚点名称非法字符：页面一次只报一个也要能连着修完', async () => {
+  await page.setContent('<style>:root{--ui-text-danger:red}[role="dialog"]{position:fixed;inset:10px;background:white;border:1px solid}' +
+    'input{width:300px;height:24px}button{min-width:40px;min-height:25px}</style>' +
+    '<div role="dialog" class="TUXModal common-modal"><div class="common-modal-body"><input type="text">' +
+    '<div class="err" style="color:var(--ui-text-danger);height:16px"></div>' +
+    '<div class="TUXFormField-wordCount">12/30</div></div>' +
+    '<div class="common-modal-footer"><button class="TUXButton--primary">任意语言</button></div></div>');
+  await page.evaluate(() => {
+    const input = document.querySelector('input'), err = document.querySelector('.err');
+    const btn = document.querySelector('.TUXButton--primary'), bad = ['–', '丨'];
+    const validate = () => {
+      const hit = [...input.value].find((c) => bad.includes(c));
+      err.textContent = hit ? 'Remove invalid characters: ' + hit : '';
+      btn.disabled = Boolean(hit);
+    };
+    input.addEventListener('input', validate);
+    input.value = 'A–B丨C'; validate();
+  });
+  await page.evaluate(installTkqInPage, { text: {}, hashtagKeywords: [] });
+  const r = await page.evaluate(() => {
+    const modal = document.querySelector('[role="dialog"]'), input = modal.querySelector('input');
+    return window.__tkq.fixInvalidAnchorName(modal, input).then((name) => ({ ok: true, name }), (e) => ({ ok: false, msg: e.message }));
+  });
+  assert.equal(r.ok, true, r.msg);
+  assert.equal(r.name, 'ABC');
+});
+
+test('商品锚点名称非法字符：页面不点名是哪个字符时报错交人，不瞎删', async () => {
+  // 猜着删字符可能把名称删成别的商品的样子，宁可停下来让人看一眼
+  const r = await runNameFix({ prefill: 'Some Product Name', staticError: 'Nama produk tidak valid' });
+  assert.equal(r.ok, false);
+  assert.match(r.msg, /Nama produk tidak valid/);
+  assert.match(r.msg, /人工/);
+});
+
+test('商品锚点名称非法字符：整条挂车流程能自己走完', async () => {
+  await fresh();
+  await mockProductWorkflow({ productName: 'Canned Beef 150g – Rea 400g', prefill: 'Canned Beef 150g – Rea', badChars: ['–'] });
+  const result = await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+  assert.equal(result.anchorName, 'Canned Beef 150g Rea');
+  assert.equal(await page.evaluate(() => window.__tkq.assertReadyToPublish()), true);
+});
+
+test('商品锚点名称：身份校验用清理前的原始预填值，清理不能成为挂错商品的口子', async () => {
+  await fresh();
+  // 预填值跟表格里选中的商品对不上 —— 必须立刻停，不能"先清理再对比"把它蒙混过去
+  await mockProductWorkflow({ productName: 'Canned Beef 150g', prefill: 'Totally Other – Item', badChars: ['–'] });
+  await assert.rejects(page.evaluate(() => window.__tkq.addProductLink('10000000000001')), /商品确认名称与所选商品不一致/);
+});
 
 test('商品全流程靠结构和精确ID；本地模拟点击最终按钮一次', async () => {
   await fresh(); await mockProductWorkflow();
