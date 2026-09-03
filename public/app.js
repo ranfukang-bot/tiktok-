@@ -645,3 +645,144 @@ async function init() {
 }
 
 init();
+
+// ===================== 选品粗筛 =====================
+// 定位：把 fastmoss 榜单从几十条砍到十几条，少扫几十个码。替代不了扫码本身
+// （导出里没有广告佣金、库存、七天趋势）。唯一比 Excel 强的是记住你的判断。
+
+let pickerRows = [];
+// 记住上次选的文件，这样改门槛就能直接重算，不用再拖一次文件。
+// (第一版没做，测试时发现改了门槛数字没反应——用户只会以为功能坏了)
+let pickerFile = null;
+// 记住这次筛选的元信息(原表多少条、筛掉了什么、文件名)。标记否决后要重绘表格，
+// 不留着的话标题会变成"原表 10 条""来自当前结果"，把真实来源丢了。
+let pickerMeta = null;
+
+async function screenFile(file) {
+  const errEl = document.getElementById('p-error');
+  const resEl = document.getElementById('p-result');
+  errEl.classList.add('hidden');
+  if (!file) return;
+  if (!/\.xlsx$/i.test(file.name)) {
+    errEl.textContent = `只支持 .xlsx 文件，你选的是「${file.name}」。fastmoss 导出时选 Excel 格式。`;
+    errEl.classList.remove('hidden');
+    return;
+  }
+  resEl.innerHTML = '<div class="muted" style="padding:16px 0;">正在读取…</div>';
+  try {
+    pickerFile = file;
+    const buf = await file.arrayBuffer();
+    // 大文件直接 btoa(String.fromCharCode(...)) 会爆栈，分块转
+    let binary = '';
+    const bytes = new Uint8Array(buf);
+    for (let i = 0; i < bytes.length; i += 8192) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    }
+    const data = await api('POST', '/api/products/screen', {
+      fileBase64: btoa(binary),
+      minCommission: Number(document.getElementById('p-min-commission').value),
+      minShopSales: Number(document.getElementById('p-min-shopsales').value),
+      requireCommission: document.getElementById('p-require-commission').checked,
+    });
+    pickerRows = data.passed;
+    pickerMeta = { total: data.total, reasons: data.reasons, missingFields: data.missingFields, fileName: file.name };
+    renderPickerResult(data, file.name);
+  } catch (err) {
+    resEl.innerHTML = '';
+    errEl.textContent = err.message;
+    errEl.classList.remove('hidden');
+  }
+}
+
+function renderPickerResult(data, fileName) {
+  const r = data.reasons;
+  const cut = [
+    r.noCommission ? `没有佣金数据 ${r.noCommission} 条` : '',
+    r.lowCommission ? `佣金不达标 ${r.lowCommission} 条` : '',
+    r.smallShop ? `店铺太小 ${r.smallShop} 条` : '',
+    r.offShelf ? `已下架 ${r.offShelf} 条` : '',
+  ].filter(Boolean).join('、');
+
+  const rows = data.passed.map((p, i) => {
+    const judged = p.verdict === 'rejected'
+      ? `<span class="tag" style="background:var(--red-bg);color:var(--red);border-color:transparent;">${p.verdictAt} 否决过${p.verdictNote ? '：' + escapeHtml(p.verdictNote) : ''}</span>`
+      : p.verdict === 'picked'
+        ? `<span class="tag" style="background:var(--green-bg);color:var(--green);border-color:transparent;">${p.verdictAt} 已选用</span>`
+        : '';
+    return `
+      <tr data-name="${escapeAttr(p.name)}" ${p.verdict === 'rejected' ? 'class="dimmed"' : ''}>
+        <td class="num">${p.rank ?? '-'}</td>
+        <td class="num strong">${p.commission ?? '-'}%</td>
+        <td class="num">${p.sales != null ? p.sales.toLocaleString() : '-'}</td>
+        <td class="num">${p.avgPrice != null ? 'Rp' + p.avgPrice.toLocaleString() : '-'}</td>
+        <td class="num">${p.shopSales != null ? p.shopSales.toLocaleString() : '-'}</td>
+        <td>${escapeHtml(p.listedAt)}</td>
+        <td>${escapeHtml(p.name)}<br><span class="muted">${escapeHtml(p.shop)} · ${escapeHtml(p.category)}</span> ${judged}</td>
+        <td class="acts">
+          <button data-pv="rejected" data-i="${i}">否决</button>
+          <button data-pv="picked" data-i="${i}">选用</button>
+          ${p.verdict ? `<button data-pv="" data-i="${i}">撤销</button>` : ''}
+        </td>
+      </tr>`;
+  }).join('');
+
+  document.getElementById('p-result').innerHTML = `
+    <div class="group">
+      <h3>候选 ${data.passed.length} 条（原表 ${data.total} 条）</h3>
+      <div class="hint" style="margin-bottom:10px;">
+        来自「${escapeHtml(fileName)}」。${cut ? '筛掉了：' + cut + '。' : ''}
+        <br>这 ${data.passed.length} 条还要扫码确认 <b>${data.missingFields.join(' / ')}</b>，导出里没有这些。
+      </div>
+      ${data.passed.length ? `
+      <div class="tablewrap">
+        <table class="ptable">
+          <thead><tr>
+            <th>榜</th><th>佣金</th><th>销量</th><th>客单价</th><th>店铺销量</th><th>上架</th><th>商品</th><th></th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>` : '<div class="muted">没有商品通过筛选，把上面的门槛调低一点再试。</div>'}
+    </div>`;
+}
+
+document.getElementById('p-file').addEventListener('change', (e) => screenFile(e.target.files[0]));
+
+// 门槛一改就用刚才那份文件重算，边调边看剩几条
+for (const id of ['p-min-commission', 'p-min-shopsales', 'p-require-commission']) {
+  document.getElementById(id).addEventListener('change', () => {
+    if (pickerFile) screenFile(pickerFile);
+  });
+}
+
+const dropZone = document.getElementById('p-drop');
+['dragenter', 'dragover'].forEach((ev) => dropZone.addEventListener(ev, (e) => {
+  e.preventDefault();
+  dropZone.classList.add('over');
+}));
+['dragleave', 'drop'].forEach((ev) => dropZone.addEventListener(ev, (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('over');
+}));
+dropZone.addEventListener('drop', (e) => screenFile(e.dataTransfer.files[0]));
+
+// 否决/选用：存到服务端，下次导入同一个品会直接标出来
+document.getElementById('p-result').addEventListener('click', async (e) => {
+  const btn = e.target.closest('button[data-pv]');
+  if (!btn) return;
+  const row = pickerRows[Number(btn.dataset.i)];
+  if (!row) return;
+  const verdict = btn.dataset.pv;
+  let note = '';
+  if (verdict === 'rejected') {
+    note = prompt(`否决「${row.name.slice(0, 30)}…」\n\n为什么？（可留空，写了下次能看到）\n比如：库存只有200 / 广告佣金才1%`, '') ?? '';
+  }
+  try {
+    await api('POST', '/api/products/verdicts', { name: row.name, verdict, note });
+    row.verdict = verdict;
+    row.verdictNote = note;
+    row.verdictAt = new Date().toISOString().slice(0, 10);
+    renderPickerResult({ ...pickerMeta, passed: pickerRows }, pickerMeta.fileName);
+  } catch (err) {
+    alert(err.message);
+  }
+});

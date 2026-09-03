@@ -18,6 +18,7 @@ import * as controller from './controller.js';
 import { recentLogs, subscribe } from './logBus.js';
 import { createAdapter } from './browserAdapters/index.js';
 import { sendTestNotification } from './notifier.js';
+import { screenProducts, loadVerdicts, saveVerdict } from './productScreen.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8765;
@@ -25,7 +26,8 @@ const PORT = Number(process.env.PORT) || 8765;
 ensureConfigFiles();
 
 const app = express();
-app.use(express.json());
+// 选品表格用 base64 放在 JSON 里传，默认 100kb 不够，放宽到 2mb
+app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 function handleError(res, err) {
@@ -212,6 +214,43 @@ app.post('/api/pick-folder', (req, res) => {
     const selected = stdout.trim();
     res.json({ path: selected || null });
   });
+});
+
+// ===== 选品粗筛 =====
+// 把 fastmoss 导出的榜单表读进来，按门槛筛一遍。
+// 注意这一步替代不了扫码看详情——导出里没有广告佣金、库存和七天趋势。
+app.post('/api/products/screen', (req, res) => {
+  try {
+    const { fileBase64, minCommission, minShopSales, requireCommission } = req.body || {};
+    if (!fileBase64) throw new Error('没有收到文件');
+    const buf = Buffer.from(fileBase64, 'base64');
+    res.json(screenProducts(buf, {
+      minCommission: Number(minCommission),
+      minShopSales: Number(minShopSales),
+      requireCommission,
+    }));
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+// 记住"这个品我否决过/选用了"。榜单每次导出大量重复，没有这个记录
+// 就会把同一个品反复扫码判断一遍——这是这个功能唯一比 Excel 强的地方。
+app.get('/api/products/verdicts', (req, res) => {
+  try {
+    res.json(loadVerdicts());
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+app.post('/api/products/verdicts', (req, res) => {
+  try {
+    const { name, verdict, note } = req.body || {};
+    res.json({ ok: true, saved: saveVerdict(name, verdict, note) });
+  } catch (err) {
+    handleError(res, err);
+  }
 });
 
 app.get('/api/logs', (req, res) => {

@@ -33,6 +33,55 @@
   </section>
 
   <section class="card">
+    <details id="picker-details">
+      <summary>选品粗筛（fastmoss 榜单导出）</summary>
+
+      <div class="hint" style="margin-bottom:14px;">
+        把 fastmoss 导出的榜单表拖进来，按佣金门槛先筛一遍，把几十条砍到十几条再去扫码。
+        <br>
+        <b>它替代不了扫码</b>：导出里没有广告佣金、没有库存、"销量环比"那一列是空的，
+        所以你那三条标准它一条都判断不了，还是得扫码进去看。它省的是"扫 50 个"变成"扫 10 个"。
+        <br>
+        <b>比 Excel 强的地方只有一个</b>：你点过"否决"的品，下次再出现在榜单里会直接标出来，
+        不用重复判断第二遍。
+      </div>
+
+      <div class="group">
+        <h3>筛选门槛</h3>
+        <div class="form-grid">
+          <div class="field">
+            <label>最低佣金比例（%）</label>
+            <input type="number" min="0" max="100" step="0.5" id="p-min-commission" value="8">
+          </div>
+          <div class="field">
+            <label>店铺累计销量至少（0=不限）</label>
+            <input type="number" min="0" step="1000" id="p-min-shopsales" value="0">
+            <div class="hint">用来排掉刚开的小店。填 10000 之类的值试试。</div>
+          </div>
+          <div class="field span2">
+            <label><input type="checkbox" id="p-require-commission" checked> 排除没有佣金数据的商品</label>
+            <div class="hint">
+              导出里约一半商品的佣金比例是空的，这些店铺累计销量普遍低一个数量级。
+              如果你确认"空"就是不开放带货，勾着能省不少事。
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="group">
+        <h3>选择榜单文件</h3>
+        <div id="p-drop">
+          把 fastmoss 导出的 .xlsx 拖到这里，或者<label for="p-file" class="linklike">点击选择文件</label>
+          <input type="file" id="p-file" accept=".xlsx" hidden>
+        </div>
+        <div id="p-error" class="error-banner hidden" style="margin-top:12px;"></div>
+      </div>
+
+      <div id="p-result"></div>
+    </details>
+  </section>
+
+  <section class="card">
     <details id="settings-details">
       <summary>全局设置</summary>
       <form id="settings-form">
