@@ -294,28 +294,88 @@ export function installTkqInPage(config) {
     return { state: 'uploading', progress: progress?.style.width || '' };
   }
 
-  async function waitForUploadComplete(filename) {
+  // 上传等多久，看的是【有没有卡住】，不是【用了多久】。
+  //
+  // 原来写死等 3 分钟，网速慢的时候视频还在传（进度条明明在涨）就被判"等待元素超时"，
+  // 然后整轮重来——重来又要从头传一遍，网速慢的人永远发不出去。
+  // 现在只要进度还在往前走就一直等；只有进度【停住不动】超过 stallMs 才算真出事。
+  // 绝对上限只是防页面彻底挂死的兜底，正常不会碰到。
+  // ⚠️ stallMs 必须明显大于下面那个 1200ms 的"标题稳定"窗口：传完之后进度就不再变化，
+  // 卡住计时器开始走，如果 stallMs 比 1200ms 还短，标题永远来不及"稳定"就被判超时了。
+  async function waitForUploadComplete(filename, stallMs = 3 * 60 * 1000, hardCapMs = 30 * 60 * 1000) {
     const expected = String(filename || '').replace(/\.[^.]+$/, '').trim();
+    const started = Date.now();
+    let lastProgress = null;
+    let progressedAt = Date.now();
     let stableText = null;
     let stableSince = 0;
-    log('等待上传完成状态和默认标题稳定（DOM识别，无需语言配置）…');
-    await waitFor(() => {
+    let loggedPercent = -1;
+
+    log('等待上传完成（只要进度还在走就一直等，卡住不动超过3分钟才算失败）…');
+
+    while (Date.now() - started < hardCapMs) {
+      checkForAppCrash();
       const upload = getUploadState();
       if (upload.state === 'error') throw new Error('视频上传失败，已停止后续操作');
-      const editable = getCaptionEditable();
-      const caption = getCaptionText(editable);
-      if (upload.state !== 'success' || !editable || !expected || caption !== expected) {
-        stableText = null;
-        stableSince = 0;
-        return null;
+
+      // 进度条宽度就是百分比，跟界面语言无关。它一变就说明还在传，把计时器往后推。
+      if (upload.progress !== lastProgress) {
+        lastProgress = upload.progress;
+        progressedAt = Date.now();
+        const pct = Math.floor(parseFloat(upload.progress) || 0);
+        // 每涨 10% 报一次，别把日志刷爆
+        if (pct >= loggedPercent + 10) {
+          loggedPercent = pct - (pct % 10);
+          log(`上传中 ${pct}%…`);
+        }
       }
-      if (caption !== stableText) {
-        stableText = caption;
-        stableSince = Date.now();
+
+      if (upload.state === 'success') {
+        // 传完了还要等 TikTok 把默认标题填进去并稳定下来，才能安全地去清空它
+        const editable = getCaptionEditable();
+        const caption = getCaptionText(editable);
+        if (editable && expected && caption === expected) {
+          if (caption !== stableText) {
+            stableText = caption;
+            stableSince = Date.now();
+          }
+          if (Date.now() - stableSince >= 1200) {
+            log('视频上传完成且默认标题已稳定 ✅');
+            return true;
+          }
+        } else {
+          stableText = null;
+          stableSince = 0;
+        }
+        // 这里【不要】再去动 progressedAt：传完之后进度就固定在100%不再变化，
+        // 上面的计时器自然会往前走，等标题超过 stallMs 就会报错。
+        // 之前在这里加过一行"续命"，结果是这个阶段永远等不到超时，空转到硬上限。
       }
-      return Date.now() - stableSince >= 1200;
-    }, 3 * 60 * 1000, 200);
-    log('视频上传完成且默认标题已稳定 ✅');
+
+      const stalledFor = Date.now() - progressedAt;
+      if (stalledFor >= stallMs) {
+        // 不满一分钟就用秒，别把 40 秒写成"1 分钟"——报错里的数字要能对得上现实
+        const mins = stalledFor < 60000
+          ? `${Math.round(stalledFor / 1000)} 秒`
+          : `${Math.round(stalledFor / 60000)} 分钟`;
+        if (upload.state === 'success') {
+          throw new Error(`上传已完成，但等了 ${mins} 还没等到默认标题就位，页面可能有问题`);
+        }
+        // 分开说：'unknown' 是根本没找到上传状态区域(页面没加载好/结构变了)，
+        // 跟"进度条停住不动"是两回事，报成"卡住了"会把人往网络问题上带偏。
+        if (upload.state === 'unknown') {
+          throw new Error(`等了 ${mins} 都没在页面上找到上传状态区域，页面可能没加载好或结构变了`);
+        }
+        throw new Error(
+          `上传卡住了：进度停在 ${upload.progress || '未知'} 不动已经 ${mins}。` +
+            '可能是网络断了或者 TikTok 那边有问题，稍后会自动重试'
+        );
+      }
+      await sleep(500);
+    }
+    throw new Error(
+      `上传超过 ${Math.round(hardCapMs / 60000)} 分钟还没完成（当前 ${lastProgress || '未知'}），已放弃这一轮`
+    );
   }
 
   // ===== 文案/话题标签：只走"点历史标签面板里的chip"这一条路径。=====

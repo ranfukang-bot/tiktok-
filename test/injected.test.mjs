@@ -194,6 +194,91 @@ test('真的红色结果不会被当成开关问题放过', async () => {
   assert.match(result, /发布安全检查未通过/, '内容判红必须走不可重试那条路');
 });
 
+// 上传等多久看的是【卡住没有】，不是【用了多久】。
+// 原来写死等 3 分钟：网速慢的时候视频还在传(进度条明明在涨)就被判"等待元素超时"，
+// 然后整轮重来——重来又得从头传一遍，网速慢的人永远发不出去。
+// fresh() 的夹具默认是"传完了"，测上传过程要先退回起点
+async function resetUploadToStart() {
+  await page.evaluate(() => {
+    const c = document.querySelector('[data-e2e="upload_status_container"]');
+    c.querySelector('.info-progress').classList.remove('success');
+    c.querySelector('.info-status').classList.remove('success');
+    c.querySelector('.info-progress').style.width = '0%';
+    document.querySelector('.caption-editor [contenteditable="true"]').textContent = '';
+  });
+}
+
+async function setUploadProgress(pct, { done = false, error = false } = {}) {
+  await page.evaluate(([pct, done, error]) => {
+    const c = document.querySelector('[data-e2e="upload_status_container"]');
+    const prog = c.querySelector('.info-progress');
+    const status = c.querySelector('.info-status');
+    prog.style.width = pct + '%';
+    prog.classList.toggle('success', done);
+    status.classList.toggle('success', done);
+    prog.classList.toggle('error', error);
+  }, [pct, done, error]);
+}
+
+test('上传慢但进度一直在涨，不能判失败', async () => {
+  await fresh();
+  // fresh() 的夹具默认是"已上传完成"，这里要退回到"刚开始传"
+  await resetUploadToStart();
+  const result = await page.evaluate(() => {
+    // 进度每 100ms 涨一点，总耗时远超 stallMs(800ms)——只要"在动"就不该超时
+    const prog = document.querySelector('.info-progress');
+    const status = document.querySelector('.info-status');
+    let pct = 0;
+    const timer = setInterval(() => {
+      pct += 4;
+      prog.style.width = pct + '%';
+      if (pct >= 100) {
+        clearInterval(timer);
+        prog.classList.add('success');
+        status.classList.add('success');
+        document.querySelector('.caption-editor [contenteditable="true"]').textContent = '123456';
+      }
+    }, 100);
+    // stallMs 给 3000：要够跨过传完之后那 1200ms 的"标题稳定"窗口
+    return window.__tkq.waitForUploadComplete('123456.mp4', 3000, 60000).then(() => 'ok', (e) => e.message);
+  });
+  assert.equal(result, 'ok', '进度在涨就该一直等');
+});
+
+test('进度真的停住不动才算失败，并说清卡在几%', async () => {
+  await fresh();
+  await resetUploadToStart();
+  await setUploadProgress(99);
+  const result = await page.evaluate(() =>
+    window.__tkq.waitForUploadComplete('123456.mp4', 800, 60000).then(() => 'PASSED', (e) => e.message));
+  assert.notEqual(result, 'PASSED');
+  assert.match(result, /卡住/);
+  assert.match(result, /99%/, '要告诉人卡在哪，不能只说"等待元素超时"');
+});
+
+test('传完了但默认标题一直不出现，也要能退出，不能空转到硬上限', async () => {
+  await fresh();
+  await setUploadProgress(100, { done: true });
+  const started = Date.now();
+  const result = await page.evaluate(() =>
+    window.__tkq.waitForUploadComplete('从来不会出现的标题.mp4', 800, 60000).then(() => 'PASSED', (e) => e.message));
+  assert.notEqual(result, 'PASSED');
+  assert.match(result, /默认标题/);
+  // 曾经在这个分支里给计时器"续命"，结果是永远等不到超时，一直空转到硬上限
+  assert.ok(Date.now() - started < 20000, '应该在 stallMs 附近退出，不是熬满 60 秒');
+});
+
+test('上传报错立刻停，不用等到超时', async () => {
+  await fresh();
+  await resetUploadToStart();
+  await setUploadProgress(30, { error: true });
+  const started = Date.now();
+  const result = await page.evaluate(() =>
+    window.__tkq.waitForUploadComplete('123456.mp4', 60000, 90000).then(() => 'PASSED', (e) => e.message));
+  assert.match(result, /视频上传失败/);
+  assert.ok(Date.now() - started < 5000, '报错就该立刻退出');
+});
+
 test('上传99%或未知结构不能算完成，不读完成提示文案', async () => {
   await fresh();
   assert.equal(await page.evaluate(() => window.__tkq.getUploadState().state), 'success');
