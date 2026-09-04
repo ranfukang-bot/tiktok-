@@ -563,21 +563,32 @@ export function installTkqInPage(config) {
   async function fixInvalidAnchorName(nameModal, nameInput) {
     const original = nameInput.value;
     for (let attempt = 1; attempt <= 5; attempt += 1) {
-      // 按钮可用就说明这个名字已经被接受了，不用再动
-      if (getWorkflowAction(getTopModal(), 'name')) return nameInput.value.trim();
+      // 真实 TikTok 页面有一种很坑的状态：输入框 aria-invalid=true、红字已经点名
+      // 非法字符，但主按钮在 DOM 里仍然 disabled=false / aria-disabled=false；点它只会
+      // 无声无息地没反应。因此不能再把“按钮可用”单独当成名称已经通过校验。
+      // 每轮都先等页面给出两个可信结果之一：明确点名非法字符，或输入框无错误且按钮可用。
+      const validation = await waitForOrNull(() => {
+        const errorText = getNameFieldError(nameModal);
+        const bad = parseInvalidChars(errorText, nameInput.value);
+        if (bad.length) return { bad, errorText };
 
-      const errorText = getNameFieldError(nameModal);
-      const bad = parseInvalidChars(errorText, nameInput.value);
-      if (!bad.length) {
-        // 页面没点名任何字符：可能只是还在校验，等一下再看
-        await sleep(400);
-        if (getWorkflowAction(getTopModal(), 'name')) return nameInput.value.trim();
+        const explicitlyInvalid = nameInput.getAttribute('aria-invalid') === 'true' || Boolean(errorText);
+        if (!explicitlyInvalid && getWorkflowAction(nameModal, 'name')) {
+          return { accepted: true, bad: [], errorText: '' };
+        }
+        return null;
+      }, 2000, 100);
+
+      if (validation?.accepted) return nameInput.value.trim();
+      if (!validation?.bad?.length) {
+        const errorText = getNameFieldError(nameModal);
         throw new Error(
           `商品锚点名称不被接受，但页面没有说明是哪个字符有问题（当前名称：${nameInput.value}${errorText ? '，提示：' + errorText : ''}）。` +
             '需要人工打开这个账号手动改一下名称'
         );
       }
 
+      const bad = validation.bad;
       const cleaned = [...nameInput.value].filter((ch) => !bad.includes(ch)).join('').replace(/\s+/g, ' ').trim();
       if (!cleaned) {
         throw new Error(`商品锚点名称里的字符被 TikTok 全部判为非法（原名：${original}），需要人工处理`);
