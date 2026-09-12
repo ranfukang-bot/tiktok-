@@ -510,15 +510,34 @@ export function installTkqInPage(config) {
     }
     // 名字里有 TikTok 不接受的字符时，照着页面报的把那些字符去掉再继续。
     // 只改显示用的锚点名称，挂哪个商品是前面按ID选定的，不受影响。
-    const anchorName = await fixInvalidAnchorName(nameModal, nameInput);
-    fireClick(await waitFor(() => getWorkflowAction(getTopModal(), 'name'), 10000));
-    await waitFor(() => {
-      if (getVisibleModalRoots().length) return false;
-      return attachedProductLabel()?.textContent.trim() === anchorName;
-    }, 15000, 150);
+    const anchorName = await confirmAnchorName(nameModal, nameInput);
     attachedProduct = { productId, anchorName };
     log('商品链接添加完成并已核对锚点: ' + productId);
     return { ...attachedProduct };
+  }
+
+  async function confirmAnchorName(nameModal, nameInput) {
+    // 某些校验由“添加”请求返回，点击前没有 aria-invalid 或红字。
+    // 每次只提交一次，然后等待成功或明确拒绝；网络没回包时不能重复提交。
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const anchorName = await fixInvalidAnchorName(nameModal, nameInput);
+      if (getTopModal() !== nameModal) throw new Error('商品名称确认弹窗发生变化，已停止挂车');
+      fireClick(await waitFor(() => getWorkflowAction(nameModal, 'name'), 10000));
+      const outcome = await waitForOrNull(() => {
+        if (!getVisibleModalRoots().length) {
+          return attachedProductLabel()?.textContent.trim() === anchorName ? 'attached' : null;
+        }
+        if (getTopModal() === nameModal &&
+            (nameInput.getAttribute('aria-invalid') === 'true' || getNameFieldError(nameModal))) return 'rejected';
+        return null;
+      }, 15000, 150);
+      if (outcome === 'attached') return anchorName;
+      if (outcome !== 'rejected') {
+        throw new Error('等待元素超时：提交商品名称后，未收到挂车成功或名称校验错误，已停止重复提交');
+      }
+      log('提交商品名称后收到校验错误，按页面提示清理后重试');
+    }
+    throw new Error('商品锚点名称提交后反复校验失败，需要人工处理');
   }
 
   // TikTok 会拿商品名预填这个"锚点名称"，但有些商品名带它自己不接受的字符
@@ -892,6 +911,7 @@ export function installTkqInPage(config) {
     addProductLink,
     parseInvalidChars,
     fixInvalidAnchorName,
+    confirmAnchorName,
     setAiDisclosure,
     setPublishNow,
     waitForChecksPassAndAssertSafe,

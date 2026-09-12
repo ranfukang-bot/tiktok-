@@ -269,10 +269,33 @@ app.get('/api/logs/stream', (req, res) => {
   req.on('close', unsubscribe);
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   const url = `http://127.0.0.1:${PORT}`;
   console.log(`TikTok 批量发布控制台已启动: ${url}`);
   open(url).catch(() => {
     console.log('没能自动打开浏览器，请手动访问上面这个地址');
   });
+});
+
+// 双击启动脚本时可能已有控制台在运行。确认是本应用后复用它，避免端口冲突崩溃。
+server.on('error', async (err) => {
+  const url = `http://127.0.0.1:${PORT}`;
+  if (err.code === 'EADDRINUSE') {
+    try {
+      const response = await fetch(`${url}/api/status`, { signal: AbortSignal.timeout(3000) });
+      const status = response.ok ? await response.json() : null;
+      if (status && typeof status.running === 'boolean' && Array.isArray(status.accounts) &&
+          Object.hasOwn(status, 'lastTickAt') && Object.hasOwn(status, 'settingsError')) {
+        console.log(`控制台已经在运行，正在打开现有页面：${url}`);
+        await open(url).catch(() => console.log(`请手动打开：${url}`));
+        return;
+      }
+    } catch {
+      // 端口可能由其它程序占用，不能把它误认成控制台。
+    }
+    console.error(`端口 ${PORT} 已被其它程序占用，无法启动控制台。`);
+  } else {
+    console.error(`控制台启动失败：${err.message}`);
+  }
+  process.exitCode = 1;
 });

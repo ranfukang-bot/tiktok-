@@ -307,6 +307,12 @@
           <input type="text" id="a-name" required>
         </div>
         <div class="field">
+          <label for="a-phone-group">所属手机</label>
+          <input type="text" id="a-phone-group" list="phone-group-options" maxlength="60" placeholder="例如：印尼1号手机、菲律宾1号手机">
+          <datalist id="phone-group-options"></datalist>
+          <div class="hint">选择已有分组，或输入新手机名称。同一部手机填相同名称；留空则放在未分组。</div>
+        </div>
+        <div class="field">
           <label>用哪个指纹浏览器</label>
           <select id="a-browser">
             <option value="bitbrowser">比特浏览器 BitBrowser</option>

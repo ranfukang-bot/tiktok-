@@ -91,9 +91,18 @@ async function mockProductWorkflow(opts = {}) {
             confirm.disabled = !keepConfirmEnabledWhenInvalid && hit.length > 0;
             nameInput.setAttribute('aria-invalid', String(hit.length > 0));
           };
-          nameInput.addEventListener('input', validate);
-          nameInput.value = prefill; validate();
+          nameInput.addEventListener('input', () => {
+            if (opts.validateAfterSubmit) {
+              err.textContent = ''; nameInput.setAttribute('aria-invalid', 'false');
+            } else validate();
+          });
+          nameInput.value = prefill;
+          if (!opts.validateAfterSubmit) validate();
           confirm.onclick = () => {
+            if (opts.validateAfterSubmit && invalidChars().length) {
+              setTimeout(validate, 150);
+              return;
+            }
             if (invalidChars().length) return;
             const finalName = nameInput.value.trim();
             type.remove(); name.remove();
@@ -496,6 +505,18 @@ test('商品锚点名称：身份校验用清理前的原始预填值，清理�
   await assert.rejects(page.evaluate(() => window.__tkq.addProductLink('10000000000001')), /商品确认名称与所选商品不一致/);
 });
 
+test('商品名称提交后才异步报非法字符：清理并再次提交后核对锚点', async () => {
+  await fresh();
+  await mockProductWorkflow({
+    productName: '⑦ [EXCLUSIVE CREATOR] Sample product',
+    prefill: '⑦ [EXCLUSIVE CREATOR] Sample',
+    badChars: ['⑦'], keepConfirmEnabledWhenInvalid: true, validateAfterSubmit: true,
+  });
+  const result = await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+  assert.equal(result.anchorName, '[EXCLUSIVE CREATOR] Sample');
+  assert.equal(await page.evaluate(() => window.__tkq.assertReadyToPublish()), true);
+});
+
 test('商品全流程靠结构和精确ID；本地模拟点击最终按钮一次', async () => {
   await fresh(); await mockProductWorkflow();
   const result = await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
@@ -572,9 +593,21 @@ test('真实控制台JS：无需语言字段保存账号，且保留旧配置（
   await page.waitForFunction(() => accountsConfig.length === 1);
   await page.evaluate(() => openAccountModal(0));
   await page.locator('#a-name').fill('fixture-edited');
+  await page.locator('#a-phone-group').fill('印尼1号手机');
   await page.locator('#account-form button[type=submit]').click();
   await page.waitForFunction(() => document.querySelector('#account-modal').classList.contains('hidden'));
   assert.equal(saved[0].name, 'fixture-edited');
+  assert.equal(saved[0].phoneGroup, '印尼1号手机');
+  assert.match(await page.locator('.phone-group summary').innerText(), /印尼1号手机/);
+  await page.evaluate(() => openAccountModal(0));
+  assert.equal(await page.locator('#a-phone-group').inputValue(), '印尼1号手机');
+  await page.evaluate(() => {
+    closeAccountModal();
+    accountsConfig.push({ ...accountsConfig[0], name: 'second', phoneGroup: '' });
+    renderAccounts();
+  });
+  assert.equal(await page.locator('.phone-group').count(), 2);
+  assert.match(await page.locator('.phone-group summary').last().innerText(), /未分组/);
   assert.equal(saved[0].enabled, false);
   assert.equal(saved[0].dailyPublishLimit, 7);
   assert.deepEqual(saved[0].textOverrides, existing.textOverrides);

@@ -94,6 +94,11 @@ function renderStats() {
   ].join('');
 }
 
+const collapsedPhones = new Set();
+function phoneGroupOf(account) {
+  return typeof account.phoneGroup === 'string' ? account.phoneGroup.trim() : '';
+}
+
 function renderAccounts() {
   const list = document.getElementById('accounts-list');
   const empty = document.getElementById('accounts-empty');
@@ -105,6 +110,22 @@ function renderAccounts() {
   empty.style.display = 'none';
 
   const statusByName = new Map(statusData.accounts.map((a) => [a.name, a]));
+  const groups = new Map();
+  const groupNames = [...new Set(accountsConfig.map(phoneGroupOf))]
+    .sort((a, b) => !a ? 1 : !b ? -1 : a.localeCompare(b, 'zh-CN', { numeric: true }));
+  for (const name of groupNames) {
+    const members = accountsConfig.filter(a => phoneGroupOf(a) === name);
+    const group = document.createElement('details');
+    group.className = 'phone-group';
+    group.open = !collapsedPhones.has(name);
+    group.innerHTML = `<summary><span>${escapeHtml(name || '未分组')}</span><small>${members.length} 个账号</small></summary><div class="phone-accounts"></div>`;
+    group.addEventListener('toggle', () => {
+      if (!group.isConnected) return;
+      if (group.open) collapsedPhones.delete(name); else collapsedPhones.add(name);
+    });
+    list.appendChild(group);
+    groups.set(name, group.querySelector('.phone-accounts'));
+  }
 
   accountsConfig.forEach((account, idx) => {
     const runtime = statusByName.get(account.name);
@@ -192,7 +213,7 @@ function renderAccounts() {
         ? `<div class="reason" style="color:var(--amber);background:var(--amber-bg);border-color:color-mix(in srgb, var(--amber) 20%, transparent);">上次失败（已自动重试 ${runtime.consecutiveFailures} 次）：${escapeHtml(runtime.lastError)}</div>`
         : ''}
     `;
-    list.appendChild(card);
+    groups.get(phoneGroupOf(account)).appendChild(card);
   });
 }
 
@@ -255,6 +276,9 @@ function openAccountModal(idx) {
   const account = isEdit ? accountsConfig[idx] : {};
   document.getElementById('a-original-name').value = isEdit ? account.name : '';
   document.getElementById('a-name').value = account.name || '';
+  document.getElementById('a-phone-group').value = phoneGroupOf(account);
+  document.getElementById('phone-group-options').innerHTML = [...new Set(accountsConfig.map(phoneGroupOf).filter(Boolean))]
+    .map(name => `<option value="${escapeAttr(name)}"></option>`).join('');
   document.getElementById('a-browser').value = account.browser || 'bitbrowser';
   document.getElementById('a-profileid').value = profileIdOf(account);
   document.getElementById('a-folder').value = account.videoFolder || '';
@@ -356,6 +380,7 @@ accountForm.addEventListener('submit', async (e) => {
   const account = {
     ...(previous || {}),
     name: document.getElementById('a-name').value.trim(),
+    phoneGroup: document.getElementById('a-phone-group').value.trim(),
     browser,
     videoFolder: document.getElementById('a-folder').value.trim(),
     enabled: previous?.enabled !== false,
