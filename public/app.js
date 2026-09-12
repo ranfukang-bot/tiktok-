@@ -495,13 +495,16 @@ function readSlotsFromForm() {
 // 把配错的地方当场说清楚，而不是等保存到后端再报错
 function slotsProblem(slots) {
   if (!slots.length) return '至少要留一个时间节点，否则永远不会发布';
-  const starts = new Set();
   for (const s of slots) {
     const a = hmToMin(s.start), b = hmToMin(s.end);
     if (a === null || b === null) return '时间要填成 19:30 这种 24 小时制';
     if (b <= a) return `${s.start}-${s.end}：结束时间要晚于开始时间，跨午夜请拆成两个节点`;
-    if (starts.has(s.start)) return `有两个节点都是 ${s.start} 开始，请改成不同的开始时间`;
-    starts.add(s.start);
+  }
+  const sorted = [...slots].sort((x, y) => hmToMin(x.start) - hmToMin(y.start));
+  for (let i = 1; i < sorted.length; i += 1) {
+    if (hmToMin(sorted[i].start) < hmToMin(sorted[i - 1].end)) {
+      return `${sorted[i - 1].start}-${sorted[i - 1].end} 和 ${sorted[i].start}-${sorted[i].end} 时间重叠了，会在几分钟内连发两条`;
+    }
   }
   return '';
 }
@@ -520,13 +523,6 @@ function updateSlotsSummary() {
   let note = `按这些节点，每天最多发 <b>${sorted.length}</b> 条`;
   if (limit && limit < sorted.length) note += `；但每日额度是 ${limit} 条，所以实际最多 <b>${limit}</b> 条（发满就停，剩下的节点空着）`;
   if (limit && limit > sorted.length) note += `；每日额度设的是 ${limit} 条，比节点还多，多出来的发不掉——要么加节点，要么把额度改成 ${sorted.length}`;
-  // 相邻节点挨太近的话，"最少间隔"会把后一个顶掉，这个必须提前讲明白
-  const gap = Number(document.getElementById('s-min-gap').value) || 0;
-  const tight = [];
-  for (let i = 1; i < sorted.length; i += 1) {
-    if (hmToMin(sorted[i].start) - hmToMin(sorted[i - 1].start) < gap) tight.push(`${sorted[i - 1].start}→${sorted[i].start}`);
-  }
-  if (tight.length) note += `<br><b style="color:var(--amber)">注意：${tight.join('、')} 间隔不到 ${gap} 分钟，后一个节点可能被"最少间隔"顶掉而发不出去。</b>`;
   el.innerHTML = note;
 }
 
@@ -543,14 +539,13 @@ document.getElementById('slots-editor').addEventListener('click', (e) => {
   renderSlots();
 });
 document.getElementById('slots-editor').addEventListener('input', updateSlotsSummary);
-document.getElementById('s-min-gap').addEventListener('input', updateSlotsSummary);
 document.getElementById('s-daily-limit').addEventListener('input', updateSlotsSummary);
 document.getElementById('s-slots-enabled').addEventListener('change', updateScheduleMode);
 
 // 两种模式二选一，只显示当前这套的输入框，免得两套摆在一起看不出哪个在生效
 function updateScheduleMode() {
   const useSlots = document.getElementById('s-slots-enabled').checked;
-  for (const id of ['slots-editor-field', 'slots-gap-field']) {
+  for (const id of ['slots-editor-field']) {
     document.getElementById(id).style.display = useSlots ? '' : 'none';
   }
   for (const id of ['window-legacy-field', 'window-start-field', 'window-end-field']) {
@@ -575,7 +570,6 @@ function fillSettingsForm(settings) {
   // 没配过 postingSlots 的老配置：默认就是节点模式，用内置的四个波峰节点
   const slotCfg = settings.postingSlots || {};
   document.getElementById('s-slots-enabled').checked = slotCfg.enabled !== false;
-  document.getElementById('s-min-gap').value = Number.isFinite(slotCfg.minGapMinutes) ? slotCfg.minGapMinutes : 90;
   slotRows = (Array.isArray(slotCfg.slots) && slotCfg.slots.length ? slotCfg.slots : DEFAULT_SLOTS)
     .map((x) => ({ start: x.start || '', end: x.end || '', label: x.label || '' }));
   renderSlots();
@@ -624,11 +618,7 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
     const problem = slotsProblem(slots);
     if (problem) { showGlobalError(`发布时间节点：${problem}`); return; }
   }
-  settings.postingSlots = {
-    enabled: useSlots,
-    minGapMinutes: Number(document.getElementById('s-min-gap').value) || 0,
-    slots,
-  };
+  settings.postingSlots = { enabled: useSlots, slots };
   settings.postingWindow = {
     // 节点模式下这一段留着不动，方便随时切回去
     enabled: !useSlots,

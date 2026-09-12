@@ -138,16 +138,13 @@ export function resolveTimezone(settings, account) {
 // 一天里的固定发布节点。默认这四个是按带货流量波峰排的：
 // 午休(手机使用率开始爬升，跑基础完播) / 下班通勤(给晚高峰留两小时蓄水期) /
 // 晚高峰(全天流量最集中、出单主力) / 睡前(冲动下单最频繁)。
-// 每个节点是一个区间而不是一个点：实际发布时刻在区间里随机取，不卡整点——
-// 整点是竞品和各种定时脚本集中释放的时间。
+// 每个节点是一个区间而不是一个点：实际发布时刻在区间里随机取一个。
 export const DEFAULT_POSTING_SLOTS = [
   { start: '11:30', end: '12:30', label: '午休高峰' },
   { start: '16:30', end: '17:30', label: '下班通勤' },
   { start: '19:30', end: '20:30', label: '核心晚高峰' },
   { start: '21:30', end: '22:30', label: '睡前冲动期' },
 ];
-
-export const DEFAULT_MIN_GAP_MINUTES = 90;
 
 // 发布排期。两种模式二选一：
 //   slots  固定时间节点(默认)，每个节点当天最多发一条，错过不补发
@@ -159,7 +156,7 @@ export const DEFAULT_MIN_GAP_MINUTES = 90;
 export function resolvePostingPlan(settings) {
   const raw = (settings && settings.postingSlots) || {};
   if (raw.enabled === false) {
-    return { mode: 'window', slots: [], minGapMs: 0, window: resolvePostingWindow(settings) };
+    return { mode: 'window', slots: [], window: resolvePostingWindow(settings) };
   }
   const rawSlots = Array.isArray(raw.slots) && raw.slots.length ? raw.slots : DEFAULT_POSTING_SLOTS;
   const slots = [];
@@ -176,15 +173,13 @@ export function resolvePostingPlan(settings) {
     slots.push({ start: slot.start.trim(), end: slot.end.trim(), label: (slot.label || '').trim() });
   }
   slots.sort((a, b) => parseHm(a.start) - parseHm(b.start));
-  const seen = new Set();
-  for (const slot of slots) {
-    if (seen.has(slot.start)) throw new Error(`有两个发布时间节点都是 ${slot.start} 开始，请改成不同的开始时间`);
-    seen.add(slot.start);
+  // 节点之间不能重叠：重叠了会在几分钟内连发两条，那正是要避免的
+  for (let i = 1; i < slots.length; i += 1) {
+    if (parseHm(slots[i].start) < parseHm(slots[i - 1].end)) {
+      throw new Error(`发布时间节点 ${slots[i - 1].start}-${slots[i - 1].end} 和 ${slots[i].start}-${slots[i].end} 时间重叠了，会在几分钟内连发两条`);
+    }
   }
-  const minGapMinutes = Number.isFinite(raw.minGapMinutes) && raw.minGapMinutes >= 0
-    ? raw.minGapMinutes
-    : DEFAULT_MIN_GAP_MINUTES;
-  return { mode: 'slots', slots, minGapMs: minGapMinutes * 60000, minGapMinutes, window: null };
+  return { mode: 'slots', slots, window: null };
 }
 
 export function resolvePostingWindow(settings) {

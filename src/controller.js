@@ -70,8 +70,6 @@ export function getStatus() {
           slots: plan.slots,
           accountName: account.name,
           usedKeys: state.publishDayKey === currentDayKey(timezone) ? state.slotsUsedToday || [] : [],
-          minGapMs: plan.minGapMs,
-          lastPublishAt: state.lastPublishAt,
         });
         slotsTotal = plan.slots.length;
         slotsUsed = slotsTotal - decision.remainingSlots;
@@ -127,10 +125,8 @@ export async function resolveUncertain(accountName, decision) {
       publishedItem = state.items[uncertainIndex];
       state.doneIndex = uncertainIndex;
     }
-    // 这一条确实发出去了，就得跟自动发布走一样的记账：记下发布时刻(卡最小间隔用)，
-    // 并把当前正开着的那个时间节点标记成已用掉——否则确认完之后会在同一个节点里
-    // 立刻再发一条。
-    state.lastPublishAt = Date.now();
+    // 这一条确实发出去了，就把当前正开着的那个时间节点标记成已用掉，
+    // 否则确认完之后会在同一个节点里立刻再发一条。
     const plan = resolvePostingPlan(settings);
     if (plan.mode === 'slots') {
       state.nextTime = Date.now();

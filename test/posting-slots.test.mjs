@@ -82,55 +82,40 @@ test('错过的节点不补发：下午5点半才做出视频，当天只发晚�
   const published = [];
   // 从 17:30 开始，每 5 分钟看一次，一直看到第二天凌晨
   for (let t = local('17:30'); t < local('23:59'); t += 5 * 60000) {
-    const r = evaluateSlots({
-      ...base, nowMs: t, usedKeys: used, minGapMs: 90 * 60000,
-      lastPublishAt: published.length ? published[published.length - 1] : null,
-    });
+    const r = evaluateSlots({ ...base, nowMs: t, usedKeys: used });
     if (r.due) { used.push(r.due.key); published.push(t); }
   }
   assert.deepEqual(used, ['19:30', '21:30'], '只用晚上这两个节点，不补 11:30 和 16:30');
   assert.equal(published.length, 2);
-  // 两条之间实打实隔开了
-  assert.ok(published[1] - published[0] >= 90 * 60000, '两条之间至少隔了90分钟');
+  // 间隔是节点排布本身带来的，不靠额外的规则：19:30 那档最晚 20:29 发，
+  // 21:30 那档最早 21:30 发，怎么排都至少隔一个小时。
+  assert.ok(published[1] - published[0] >= 60 * 60000, '两条之间至少隔开一小时');
 });
 
 test('一整天从头跑：四条正好落在四个节点里，且互相不挤', () => {
   const used = [];
   const published = [];
   for (let t = local('00:00'); t < local('23:59'); t += 5 * 60000) {
-    const r = evaluateSlots({
-      ...base, nowMs: t, usedKeys: used, minGapMs: 90 * 60000,
-      lastPublishAt: published.length ? published[published.length - 1] : null,
-    });
+    const r = evaluateSlots({ ...base, nowMs: t, usedKeys: used });
     if (r.due) { used.push(r.due.key); published.push(t); }
   }
   assert.deepEqual(used, ['11:30', '16:30', '19:30', '21:30']);
   for (let i = 1; i < published.length; i += 1) {
-    assert.ok(published[i] - published[i - 1] >= 90 * 60000,
+    assert.ok(published[i] - published[i - 1] >= 60 * 60000,
       `第${i}条和第${i + 1}条之间只隔了 ${(published[i] - published[i - 1]) / 60000} 分钟`);
   }
 });
 
-test('最少间隔会顶掉挨太近的节点，但不会把它顺延到别的时段', () => {
-  const slots = [{ start: '19:00', end: '19:30' }, { start: '19:40', end: '20:10' }];
-  const tight = { timezone: TZ, dayKey: DAY, slots, accountName: 'x' };
-  // 抖动是随账号名算出来的，不能假设它落在哪：直接拿算出来的目标时刻做基准
-  const [slotA, slotB] = slotTargetsForDay({ ...tight });
-  const publishedAt = slotA.targetMs;
-  assert.equal(evaluateSlots({ ...tight, nowMs: publishedAt }).due?.key, '19:00');
-  // 刚发完就到第二个节点：被90分钟的最少间隔挡住，而且这个节点很快就结束，
-  // 于是干脆放弃——不会顺延到晚上别的时间偷偷发出来
-  const later = evaluateSlots({
-    ...tight, nowMs: Math.max(slotB.targetMs, publishedAt + 60000), usedKeys: ['19:00'],
-    minGapMs: 90 * 60000, lastPublishAt: publishedAt,
-  });
-  assert.equal(later.due, null);
-  assert.equal(later.blockedByGap, true);
-  const muchLater = evaluateSlots({
-    ...tight, nowMs: local('22:00'), usedKeys: ['19:00'],
-    minGapMs: 90 * 60000, lastPublishAt: local('19:29'),
-  });
-  assert.equal(muchLater.due, null, '过了节点窗口就是过了，不会挪到别的时间发');
+test('节点重叠会在保存时被拒绝——那才是"几分钟内连发两条"的唯一来源', () => {
+  assert.throws(
+    () => resolvePostingPlan({ postingSlots: { slots: [{ start: '19:00', end: '19:50' }, { start: '19:40', end: '20:10' }] } }),
+    /时间重叠/
+  );
+  // 首尾相接不算重叠，是合法的
+  assert.equal(
+    resolvePostingPlan({ postingSlots: { slots: [{ start: '19:00', end: '19:40' }, { start: '19:40', end: '20:10' }] } }).slots.length,
+    2
+  );
 });
 
 test('今天发完了，nextAt 指向明天的第一个节点', () => {
@@ -157,7 +142,7 @@ test('配置解析：老配置默认就是节点模式，配错了明确报错�
   assert.throws(() => resolvePostingPlan({ postingSlots: { slots: [{ start: '20:00', end: '19:00' }] } }), /结束时间/);
   assert.throws(() => resolvePostingPlan({
     postingSlots: { slots: [{ start: '19:00', end: '19:30' }, { start: '19:00', end: '20:00' }] },
-  }), /两个发布时间节点/);
+  }), /时间重叠/);
   // 自定义节点要按开始时间排好序，不能依赖用户填的顺序
   const custom = resolvePostingPlan({ postingSlots: { slots: [{ start: '21:00', end: '22:00' }, { start: '12:00', end: '13:00' }] } });
   assert.deepEqual(custom.slots.map((s) => s.start), ['12:00', '21:00']);
@@ -171,26 +156,4 @@ test('时分解析的边界', () => {
   assert.equal(parseHm('12:60'), null);
   assert.equal(parseHm(''), null);
   assert.equal(formatHm(545), '09:05');
-});
-
-test('不卡整点和半点（那是各种定时脚本扎堆释放的时间）', () => {
-  // 抖动是均匀的，总会有落在 :00 / :30 上的时候，要能挪开。
-  // 扫一大批账号名，只要出现一次整点就算没做到。
-  const hits = [];
-  for (let i = 0; i < 300; i += 1) {
-    for (const t of slotTargetsForDay({ ...base, accountName: `号${i}` })) {
-      const minute = Number(t.targetText.split(':')[1]);
-      if (minute === 0 || minute === 30) hits.push(`号${i} ${t.targetText}`);
-      // 挪完也不能挪出区间
-      assert.ok(t.targetMs >= t.startMs && t.targetMs < t.endMs, `${t.targetText} 跑到 ${t.start}-${t.end} 外面了`);
-    }
-  }
-  assert.deepEqual(hits, []);
-});
-
-test('区间太窄挪不动时，宁可卡整点也不能跑出区间', () => {
-  const slots = [{ start: '20:00', end: '20:01' }];
-  for (const t of slotTargetsForDay({ ...base, slots })) {
-    assert.ok(t.targetMs >= t.startMs && t.targetMs < t.endMs);
-  }
 });

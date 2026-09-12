@@ -648,23 +648,23 @@ test('真实控制台JS：发布时间节点能改能存，配错了当场拦住
   // 界面要直说"按这些节点每天最多几条"，否则额度设成4、节点只有3个时会白等
   assert.match(await page.locator('#slots-summary').innerText(), /每天最多发 4 条/);
 
-  // 结束早于开始要当场拦住，而不是存进去让每一轮tick都报错
+  // 配错了要当场拦住，而不是存进去让每一轮tick都报错
   await page.locator('#slots-editor .slot-row').first().locator('.slot-end').fill('10:00');
   assert.match(await page.locator('#slots-summary').innerText(), /结束时间要晚于开始时间/);
+  await page.locator('#slots-editor .slot-row').first().locator('.slot-end').fill('17:00');
+  assert.match(await page.locator('#slots-summary').innerText(), /时间重叠/);
   await page.locator('#settings-form button[type=submit]').click();
   assert.equal(saved, null, '配错的时候不能发出保存请求');
 
   // 改回来，再删掉一个节点，存
   await page.locator('#slots-editor .slot-row').first().locator('.slot-end').fill('12:30');
   await page.locator('#slots-editor .slot-row').last().locator('.slot-del').click();
-  await page.locator('#s-min-gap').fill('100');
   page.once('dialog', (d) => d.accept());
   await page.locator('#settings-form button[type=submit]').click();
   await page.waitForFunction(() => true);
   await page.waitForTimeout(200);
   assert.ok(saved, '改对了就该存下去');
   assert.equal(saved.postingSlots.enabled, true);
-  assert.equal(saved.postingSlots.minGapMinutes, 100);
   assert.deepEqual(saved.postingSlots.slots.map((x) => x.start), ['11:30', '16:30', '19:30']);
   assert.equal(saved.postingSlots.slots[0].label, '午休高峰', '备注要跟着一起存');
 

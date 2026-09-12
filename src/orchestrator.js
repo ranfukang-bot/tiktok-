@@ -156,7 +156,6 @@ async function processAccountOnce(account, settings, adapter, log, slotKey = nul
       // 时间节点模式下由节点本身控制什么时候发，不能再叠一个随机间隔：
       // 那个间隔可能一睡就是两三个小时，足以让账号整个错过下一个节点。
       latest.nextTime = slotKey ? Date.now() : Date.now() + randomInterval(settings.minIntervalMs, settings.maxIntervalMs);
-      latest.lastPublishAt = Date.now();
       // 极小概率跨天卡在这几十秒里，保险起见在计数前再判一次
       const rolledOver = rolloverIfNewDay(latest, resolveTimezone(settings, account));
       latest.publishedToday = (latest.publishedToday || 0) + 1;
@@ -262,8 +261,6 @@ async function tickAccount(settings, account, adapters) {
         slots: plan.slots,
         accountName: account.name,
         usedKeys: state.slotsUsedToday || [],
-        minGapMs: plan.minGapMs,
-        lastPublishAt: state.lastPublishAt,
       });
       if (!decision.due) return;
       slotKey = decision.due.key;

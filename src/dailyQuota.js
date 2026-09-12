@@ -125,18 +125,6 @@ function hash32(text) {
   return h >>> 0;
 }
 
-// 整点和半点是竞品、各种定时脚本集中释放的时间，正好要避开。抖动是均匀的，
-// 总有 1/30 的概率正好落在 :00 或 :30 上，撞上了就往区间内侧挪几分钟。
-// 挪的方向同样由种子决定，保证同一天算出来的结果稳定不变。
-function avoidRoundClock(targetMin, startMin, endMin, seed) {
-  const minuteOfHour = ((targetMin % 60) + 60) % 60;
-  if (minuteOfHour !== 0 && minuteOfHour !== 30) return targetMin;
-  const shift = 1 + (seed % 4); // 挪 1-4 分钟
-  if (targetMin + shift < endMin) return targetMin + shift;
-  if (targetMin - shift >= startMin) return targetMin - shift;
-  return targetMin; // 区间太窄，挪不动就算了
-}
-
 // 把今天的每个节点换算成具体时刻。节点在配置里是"11:30-12:30"这种当地时间，
 // 实际发布时刻是这个区间里的一个随机点——不卡整点(整点是竞品和各种定时脚本
 // 集中释放的时间)，而且不同账号的随机点不一样，同一部手机上的号不会一起发。
@@ -146,9 +134,8 @@ export function slotTargetsForDay({ dayKey, timezone, slots, accountName }) {
     const startMin = parseHm(slot.start);
     const endMin = parseHm(slot.end);
     const span = endMin - startMin;
-    const seed = hash32(`${accountName}|${dayKey}|${slot.start}`);
-    const jitter = span > 1 ? seed % span : 0;
-    const targetMin = avoidRoundClock(startMin + jitter, startMin, endMin, seed);
+    const jitter = span > 1 ? hash32(`${accountName}|${dayKey}|${slot.start}`) % span : 0;
+    const targetMin = startMin + jitter;
     return {
       key: slot.start,
       label: slot.label || '',
@@ -170,22 +157,12 @@ function nextDayKey(dayKey) {
 
 // 现在这一刻该不该发。返回 due 非空就是"该发了"，其余情况都是安静地等——
 // 不算错误，不暂停，不通知。
-export function evaluateSlots({ nowMs, timezone, dayKey, slots, accountName, usedKeys = [], minGapMs = 0, lastPublishAt = null }) {
+export function evaluateSlots({ nowMs, timezone, dayKey, slots, accountName, usedKeys = [] }) {
   const targets = slotTargetsForDay({ dayKey, timezone, slots, accountName });
   const used = new Set(usedKeys);
-  const gapUntil = Number.isFinite(lastPublishAt) && lastPublishAt ? lastPublishAt + minGapMs : 0;
 
-  let due = null;
-  let blockedByGap = false;
-  for (const t of targets) {
-    if (used.has(t.key)) continue;
-    // 已经过了这个节点的窗口：错过了就是错过了，不补发
-    if (nowMs >= t.endMs) continue;
-    if (nowMs < t.targetMs) continue;
-    if (nowMs < gapUntil) { blockedByGap = true; continue; }
-    due = t;
-    break;
-  }
+  // 到点了、这个节点今天还没用过、窗口还没过完 —— 三条都满足才发
+  const due = targets.find((t) => !used.has(t.key) && nowMs >= t.targetMs && nowMs < t.endMs) || null;
 
   // 今天还剩几个能用的节点(没用过、窗口还没过完)
   const upcoming = targets.filter((t) => !used.has(t.key) && nowMs < t.endMs);
@@ -194,12 +171,12 @@ export function evaluateSlots({ nowMs, timezone, dayKey, slots, accountName, use
   if (due) {
     nextAt = nowMs;
   } else if (upcoming.length) {
-    nextAt = Math.max(upcoming[0].targetMs, gapUntil);
+    nextAt = upcoming[0].targetMs;
   } else if (targets.length) {
     // 今天发完了/全错过了，给个明天第一个节点的时刻，好在界面上显示"还要等多久"
     const tomorrow = slotTargetsForDay({ dayKey: nextDayKey(dayKey), timezone, slots, accountName });
     nextAt = tomorrow.length ? tomorrow[0].targetMs : null;
   }
 
-  return { due, blockedByGap, nextAt, remainingSlots: upcoming.length, targets };
+  return { due, nextAt, remainingSlots: upcoming.length, targets };
 }
