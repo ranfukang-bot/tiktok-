@@ -22,9 +22,20 @@
   "_quota说明": "每个账号每天最多发几条，按 timezone 指定的时区算一天的边界，超过就停下等第二天当地0点自动刷新额度。dailyPublishLimit 填0表示不限制。timezone 支持任意 IANA 时区（网页上有完整下拉可选），做哪个地区就填哪个地区的时区。",
   "dailyPublishLimit": 4,
   "timezone": "Asia/Jakarta",
+  "_postingSlots说明": "固定发布时间节点(推荐，默认开启)。一天几个流量波峰档口，每个档口当天最多发一条，实际发布时刻在 start-end 这个区间里随机取(不卡整点)。【错过的节点不补发】：视频做晚了就当天少发几条，绝不在晚上把额度硬塞完。minGapMinutes 是两条之间的最少间隔，防止节点配得太近。enabled 设为 false 就回到下面 postingWindow 那套「时段内随时发」。时间都按 timezone 指定的当地时间算。",
+  "postingSlots": {
+    "enabled": true,
+    "minGapMinutes": 90,
+    "slots": [
+      { "start": "11:30", "end": "12:30", "label": "午休高峰" },
+      { "start": "16:30", "end": "17:30", "label": "下班通勤" },
+      { "start": "19:30", "end": "20:30", "label": "核心晚高峰" },
+      { "start": "21:30", "end": "22:30", "label": "睡前冲动期" }
+    ]
+  },
   "_postingWindow说明": "只在这个时间段内发布(按 timezone 指定的当地时间，24小时制)。默认中午12点到午夜0点(endHour=24表示到午夜)。防的是：额度一到当地0点刷新，文件夹里堆着视频的话会连发好几条，没有真人会在凌晨发布。时段之外攒着的额度不会丢，等时段开始接着发。enabled设为false就关掉这个限制，恢复成只看发布间隔不看时间点。",
   "postingWindow": {
-    "enabled": true,
+    "enabled": false,
     "startHour": 12,
     "endHour": 24
   },

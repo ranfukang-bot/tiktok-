@@ -19,6 +19,7 @@ export function rolloverIfNewDay(state, timezone) {
   if (state.publishDayKey === today) return false;
   state.publishDayKey = today;
   state.publishedToday = 0;
+  state.slotsUsedToday = [];
   return true;
 }
 
@@ -82,4 +83,123 @@ export function nextPostingWindowStartMs(nowMs, timezone, window) {
   const tomorrowNoonish = new Date(zonedTimeToUtcMs(p.year, p.month, p.day, 12, 0, 0, timezone) + 24 * 3600 * 1000);
   const t = zonedParts(tomorrowNoonish, timezone);
   return zonedTimeToUtcMs(t.year, t.month, t.day, window.startHour, 0, 0, timezone);
+}
+
+// ===== 固定发布时间节点(按账号时区算) =====
+//
+// 跟上面的"时间段"是两种模式，二选一：
+//   时间段：12:00-24:00 之间，只要有视频、间隔够了就发 —— 容易在时段一开始就连发几条。
+//   时间节点：一天几个固定的波峰档口，每个档口最多发一条。
+//
+// 为什么要节点：带货的转化集中在几个波峰(午休、下班、晚高峰、睡前)，均匀铺开会把
+// 额度浪费在流量低谷。而且一条带货视频需要两三个小时在初始流量池里跑完播和互动，
+// 发太密后一条会直接截断前一条的流量。
+//
+// 【不补发】是这套逻辑的核心：视频做晚了，错过的节点就是错过了，不会在晚上把
+// 四条硬塞进去。宁可今天少发，也不要在五个半小时里连发四条——那是被风控判
+// "营销灌水"的典型特征，而且算法本来就没有"今天没发够就降权"这种机制。
+
+export function parseHm(text) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(text || '').trim());
+  if (!m) return null;
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
+  if (hour > 23 || minute > 59) return null;
+  return hour * 60 + minute;
+}
+
+export function formatHm(minutes) {
+  const h = Math.floor(minutes / 60) % 24;
+  const m = Math.floor(minutes % 60);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+// FNV-1a。要的不是密码学强度，是【同一个账号+同一天+同一个节点，算出来永远一样】：
+// 如果每次tick都重新random，目标时刻会一直漂移，永远也到不了点。
+function hash32(text) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h >>> 0;
+}
+
+// 整点和半点是竞品、各种定时脚本集中释放的时间，正好要避开。抖动是均匀的，
+// 总有 1/30 的概率正好落在 :00 或 :30 上，撞上了就往区间内侧挪几分钟。
+// 挪的方向同样由种子决定，保证同一天算出来的结果稳定不变。
+function avoidRoundClock(targetMin, startMin, endMin, seed) {
+  const minuteOfHour = ((targetMin % 60) + 60) % 60;
+  if (minuteOfHour !== 0 && minuteOfHour !== 30) return targetMin;
+  const shift = 1 + (seed % 4); // 挪 1-4 分钟
+  if (targetMin + shift < endMin) return targetMin + shift;
+  if (targetMin - shift >= startMin) return targetMin - shift;
+  return targetMin; // 区间太窄，挪不动就算了
+}
+
+// 把今天的每个节点换算成具体时刻。节点在配置里是"11:30-12:30"这种当地时间，
+// 实际发布时刻是这个区间里的一个随机点——不卡整点(整点是竞品和各种定时脚本
+// 集中释放的时间)，而且不同账号的随机点不一样，同一部手机上的号不会一起发。
+export function slotTargetsForDay({ dayKey, timezone, slots, accountName }) {
+  const [y, mo, d] = dayKey.split('-').map(Number);
+  return slots.map((slot) => {
+    const startMin = parseHm(slot.start);
+    const endMin = parseHm(slot.end);
+    const span = endMin - startMin;
+    const seed = hash32(`${accountName}|${dayKey}|${slot.start}`);
+    const jitter = span > 1 ? seed % span : 0;
+    const targetMin = avoidRoundClock(startMin + jitter, startMin, endMin, seed);
+    return {
+      key: slot.start,
+      label: slot.label || '',
+      start: slot.start,
+      end: slot.end,
+      targetText: formatHm(targetMin),
+      startMs: zonedTimeToUtcMs(y, mo, d, 0, startMin, 0, timezone),
+      endMs: zonedTimeToUtcMs(y, mo, d, 0, endMin, 0, timezone),
+      targetMs: zonedTimeToUtcMs(y, mo, d, 0, targetMin, 0, timezone),
+    };
+  }).sort((a, b) => a.startMs - b.startMs);
+}
+
+function nextDayKey(dayKey) {
+  const [y, mo, d] = dayKey.split('-').map(Number);
+  const next = new Date(Date.UTC(y, mo - 1, d) + 24 * 3600 * 1000);
+  return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, '0')}-${String(next.getUTCDate()).padStart(2, '0')}`;
+}
+
+// 现在这一刻该不该发。返回 due 非空就是"该发了"，其余情况都是安静地等——
+// 不算错误，不暂停，不通知。
+export function evaluateSlots({ nowMs, timezone, dayKey, slots, accountName, usedKeys = [], minGapMs = 0, lastPublishAt = null }) {
+  const targets = slotTargetsForDay({ dayKey, timezone, slots, accountName });
+  const used = new Set(usedKeys);
+  const gapUntil = Number.isFinite(lastPublishAt) && lastPublishAt ? lastPublishAt + minGapMs : 0;
+
+  let due = null;
+  let blockedByGap = false;
+  for (const t of targets) {
+    if (used.has(t.key)) continue;
+    // 已经过了这个节点的窗口：错过了就是错过了，不补发
+    if (nowMs >= t.endMs) continue;
+    if (nowMs < t.targetMs) continue;
+    if (nowMs < gapUntil) { blockedByGap = true; continue; }
+    due = t;
+    break;
+  }
+
+  // 今天还剩几个能用的节点(没用过、窗口还没过完)
+  const upcoming = targets.filter((t) => !used.has(t.key) && nowMs < t.endMs);
+
+  let nextAt = null;
+  if (due) {
+    nextAt = nowMs;
+  } else if (upcoming.length) {
+    nextAt = Math.max(upcoming[0].targetMs, gapUntil);
+  } else if (targets.length) {
+    // 今天发完了/全错过了，给个明天第一个节点的时刻，好在界面上显示"还要等多久"
+    const tomorrow = slotTargetsForDay({ dayKey: nextDayKey(dayKey), timezone, slots, accountName });
+    nextAt = tomorrow.length ? tomorrow[0].targetMs : null;
+  }
+
+  return { due, blockedByGap, nextAt, remainingSlots: upcoming.length, targets };
 }

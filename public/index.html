@@ -123,17 +123,34 @@
               <div class="hint">做哪个地区就选哪个地区的时区，额度和发布时段都按当地时间算。</div>
             </div>
             <div class="field span2">
-              <label><input type="checkbox" id="s-window-enabled"> 只在指定时间段内发布</label>
+              <label><input type="checkbox" id="s-slots-enabled"> 只在固定的时间节点发布（推荐）</label>
               <div class="hint">
-                额度是按当地0点刷新的，但"刚过0点有额度"不代表这时候该发——文件夹里堆着视频的话，
-                不开这个会变成凌晨几点连发好几条，没有真人会这样发。开着的话，时段之外攒着的额度不会丢，等时段开始接着发。
+                带货的转化集中在几个流量波峰（午休、下班、晚高峰、睡前）。均匀铺开发会把额度浪费在低谷期，
+                而且一条带货视频要两三个小时在初始流量池里跑完播和互动，发太密后一条会直接截断前一条的流量。<br>
+                每个节点当天<b>最多发一条</b>，实际时刻在区间里随机取（不卡整点，整点是各种定时脚本扎堆的时候）。
+                <b>错过的节点不补发</b>——视频做晚了就当天少发几条，第二天中午从容开始，
+                绝不在晚上把四条硬塞进去（那是被风控判"营销灌水"的典型特征）。
               </div>
             </div>
-            <div class="field">
+            <div class="field span2" id="slots-editor-field">
+              <label>时间节点（当地时间，24小时制）</label>
+              <div id="slots-editor"></div>
+              <button type="button" class="ghost" id="s-slot-add">+ 加一个节点</button>
+              <div class="hint" id="slots-summary"></div>
+            </div>
+            <div class="field" id="slots-gap-field">
+              <label>两条之间最少间隔（分钟）</label>
+              <input type="number" min="0" max="720" step="5" id="s-min-gap">
+              <div class="hint">防止节点配得太近的兜底。节点排得开的话这条平时不会生效。</div>
+            </div>
+            <div class="field span2" id="window-legacy-field">
+              <div class="hint">关掉上面那个开关就回到旧的"时间段内随时发"：</div>
+            </div>
+            <div class="field" id="window-start-field">
               <label>几点开始（当地时间，24小时制）</label>
               <input type="number" min="0" max="23" step="1" id="s-window-start">
             </div>
-            <div class="field">
+            <div class="field" id="window-end-field">
               <label>几点结束（24=到午夜）</label>
               <input type="number" min="1" max="24" step="1" id="s-window-end">
             </div>

@@ -157,7 +157,12 @@ function renderAccounts() {
       edge = 'idle';
     } else if (runtime.inPostingWindow === false) {
       const wait = runtime.nextWindowStart ? fmtRemaining(runtime.nextWindowStart - Date.now()) : '';
-      stateHtml = `<span class="state off" title="只在设置里指定的时间段内发布">未到发布时段${wait ? '，还要等 ' + wait : ''}</span>`;
+      if (runtime.scheduleMode === 'slots') {
+        const tip = `今天的发布节点用掉 ${runtime.slotsUsedToday}/${runtime.slotsTotal} 个。错过的节点不补发。`;
+        stateHtml = `<span class="state off" title="${escapeAttr(tip)}">等下一个时间节点${wait ? '，还要等 ' + wait : ''}</span>`;
+      } else {
+        stateHtml = `<span class="state off" title="只在设置里指定的时间段内发布">未到发布时段${wait ? '，还要等 ' + wait : ''}</span>`;
+      }
       edge = 'idle';
     } else if (runtime.total === 0) {
       stateHtml = `<span class="state processing">文件夹里没有视频</span>`;
@@ -450,6 +455,109 @@ document.getElementById('btn-test-notify').addEventListener('click', async (e) =
   }
 });
 
+// ===== 发布时间节点编辑器 =====
+const DEFAULT_SLOTS = [
+  { start: '11:30', end: '12:30', label: '午休高峰' },
+  { start: '16:30', end: '17:30', label: '下班通勤' },
+  { start: '19:30', end: '20:30', label: '核心晚高峰' },
+  { start: '21:30', end: '22:30', label: '睡前冲动期' },
+];
+let slotRows = [];
+
+function hmToMin(text) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(text || '').trim());
+  if (!m) return null;
+  const h = Number(m[1]), mi = Number(m[2]);
+  return h > 23 || mi > 59 ? null : h * 60 + mi;
+}
+
+function renderSlots() {
+  const box = document.getElementById('slots-editor');
+  box.innerHTML = slotRows.map((slot, i) => `
+    <div class="slot-row" data-idx="${i}">
+      <input type="time" class="slot-start" value="${escapeAttr(slot.start)}">
+      <span class="slot-dash">到</span>
+      <input type="time" class="slot-end" value="${escapeAttr(slot.end)}">
+      <input type="text" class="slot-label" maxlength="20" placeholder="备注（可留空）" value="${escapeAttr(slot.label || '')}">
+      <button type="button" class="ghost slot-del" title="删掉这个节点">✕</button>
+    </div>`).join('');
+  updateSlotsSummary();
+}
+
+function readSlotsFromForm() {
+  return [...document.querySelectorAll('#slots-editor .slot-row')].map((row) => ({
+    start: row.querySelector('.slot-start').value.trim(),
+    end: row.querySelector('.slot-end').value.trim(),
+    label: row.querySelector('.slot-label').value.trim(),
+  }));
+}
+
+// 把配错的地方当场说清楚，而不是等保存到后端再报错
+function slotsProblem(slots) {
+  if (!slots.length) return '至少要留一个时间节点，否则永远不会发布';
+  const starts = new Set();
+  for (const s of slots) {
+    const a = hmToMin(s.start), b = hmToMin(s.end);
+    if (a === null || b === null) return '时间要填成 19:30 这种 24 小时制';
+    if (b <= a) return `${s.start}-${s.end}：结束时间要晚于开始时间，跨午夜请拆成两个节点`;
+    if (starts.has(s.start)) return `有两个节点都是 ${s.start} 开始，请改成不同的开始时间`;
+    starts.add(s.start);
+  }
+  return '';
+}
+
+function updateSlotsSummary() {
+  const el = document.getElementById('slots-summary');
+  if (!el) return;
+  const slots = readSlotsFromForm();
+  const problem = slotsProblem(slots);
+  if (problem) {
+    el.innerHTML = `<b style="color:var(--red)">${escapeHtml(problem)}</b>`;
+    return;
+  }
+  const limit = Number(document.getElementById('s-daily-limit').value) || 0;
+  const sorted = [...slots].sort((a, b) => hmToMin(a.start) - hmToMin(b.start));
+  let note = `按这些节点，每天最多发 <b>${sorted.length}</b> 条`;
+  if (limit && limit < sorted.length) note += `；但每日额度是 ${limit} 条，所以实际最多 <b>${limit}</b> 条（发满就停，剩下的节点空着）`;
+  if (limit && limit > sorted.length) note += `；每日额度设的是 ${limit} 条，比节点还多，多出来的发不掉——要么加节点，要么把额度改成 ${sorted.length}`;
+  // 相邻节点挨太近的话，"最少间隔"会把后一个顶掉，这个必须提前讲明白
+  const gap = Number(document.getElementById('s-min-gap').value) || 0;
+  const tight = [];
+  for (let i = 1; i < sorted.length; i += 1) {
+    if (hmToMin(sorted[i].start) - hmToMin(sorted[i - 1].start) < gap) tight.push(`${sorted[i - 1].start}→${sorted[i].start}`);
+  }
+  if (tight.length) note += `<br><b style="color:var(--amber)">注意：${tight.join('、')} 间隔不到 ${gap} 分钟，后一个节点可能被"最少间隔"顶掉而发不出去。</b>`;
+  el.innerHTML = note;
+}
+
+document.getElementById('s-slot-add').addEventListener('click', () => {
+  slotRows = readSlotsFromForm();
+  slotRows.push({ start: '12:00', end: '13:00', label: '' });
+  renderSlots();
+});
+document.getElementById('slots-editor').addEventListener('click', (e) => {
+  const del = e.target.closest('.slot-del');
+  if (!del) return;
+  slotRows = readSlotsFromForm();
+  slotRows.splice(Number(del.closest('.slot-row').dataset.idx), 1);
+  renderSlots();
+});
+document.getElementById('slots-editor').addEventListener('input', updateSlotsSummary);
+document.getElementById('s-min-gap').addEventListener('input', updateSlotsSummary);
+document.getElementById('s-daily-limit').addEventListener('input', updateSlotsSummary);
+document.getElementById('s-slots-enabled').addEventListener('change', updateScheduleMode);
+
+// 两种模式二选一，只显示当前这套的输入框，免得两套摆在一起看不出哪个在生效
+function updateScheduleMode() {
+  const useSlots = document.getElementById('s-slots-enabled').checked;
+  for (const id of ['slots-editor-field', 'slots-gap-field']) {
+    document.getElementById(id).style.display = useSlots ? '' : 'none';
+  }
+  for (const id of ['window-legacy-field', 'window-start-field', 'window-end-field']) {
+    document.getElementById(id).style.display = useSlots ? 'none' : '';
+  }
+}
+
 function fillSettingsForm(settings) {
   document.getElementById('s-min-hours').value = (settings.minIntervalMs / 3600000).toFixed(2);
   document.getElementById('s-max-hours').value = (settings.maxIntervalMs / 3600000).toFixed(2);
@@ -461,9 +569,17 @@ function fillSettingsForm(settings) {
   document.getElementById('s-timezone').value = settings.timezone || 'Asia/Jakarta';
 
   const window = settings.postingWindow || {};
-  document.getElementById('s-window-enabled').checked = window.enabled !== false;
   document.getElementById('s-window-start').value = window.startHour ?? 12;
   document.getElementById('s-window-end').value = window.endHour ?? 24;
+
+  // 没配过 postingSlots 的老配置：默认就是节点模式，用内置的四个波峰节点
+  const slotCfg = settings.postingSlots || {};
+  document.getElementById('s-slots-enabled').checked = slotCfg.enabled !== false;
+  document.getElementById('s-min-gap').value = Number.isFinite(slotCfg.minGapMinutes) ? slotCfg.minGapMinutes : 90;
+  slotRows = (Array.isArray(slotCfg.slots) && slotCfg.slots.length ? slotCfg.slots : DEFAULT_SLOTS)
+    .map((x) => ({ start: x.start || '', end: x.end || '', label: x.label || '' }));
+  renderSlots();
+  updateScheduleMode();
 
   const notif = settings.notifications || {};
   document.getElementById('s-notify-enabled').checked = Boolean(notif.enabled);
@@ -502,8 +618,20 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
   settings.closeProfileAfterCycle = document.getElementById('s-close-profile').checked;
   settings.dailyPublishLimit = Number(document.getElementById('s-daily-limit').value) || 0;
   settings.timezone = document.getElementById('s-timezone').value;
+  const useSlots = document.getElementById('s-slots-enabled').checked;
+  const slots = readSlotsFromForm().sort((a, b) => hmToMin(a.start) - hmToMin(b.start));
+  if (useSlots) {
+    const problem = slotsProblem(slots);
+    if (problem) { showGlobalError(`发布时间节点：${problem}`); return; }
+  }
+  settings.postingSlots = {
+    enabled: useSlots,
+    minGapMinutes: Number(document.getElementById('s-min-gap').value) || 0,
+    slots,
+  };
   settings.postingWindow = {
-    enabled: document.getElementById('s-window-enabled').checked,
+    // 节点模式下这一段留着不动，方便随时切回去
+    enabled: !useSlots,
     startHour: Number(document.getElementById('s-window-start').value),
     endHour: Number(document.getElementById('s-window-end').value),
   };

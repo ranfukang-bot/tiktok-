@@ -671,3 +671,25 @@ details > summary:focus-visible { outline: none; box-shadow: var(--ring); border
 /* 否决过的品压暗，但不隐藏——你可能改主意，也需要看到"为什么当初否了" */
 .ptable tr.dimmed td { opacity: .45; }
 .ptable tr.dimmed:hover td { opacity: 1; }
+
+/* 发布时间节点编辑器 */
+.slot-row {
+  display: grid;
+  grid-template-columns: auto auto auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.slot-row input[type="time"] { width: auto; }
+.slot-dash { color: var(--muted); font-size: 13px; }
+.slot-del {
+  padding: 4px 10px;
+  line-height: 1;
+  color: var(--muted);
+}
+.slot-del:hover { color: var(--red); border-color: var(--red); }
+@media (max-width: 560px) {
+  .slot-row { grid-template-columns: 1fr 1fr auto; }
+  .slot-dash { display: none; }
+  .slot-row .slot-label { grid-column: 1 / -1; }
+}

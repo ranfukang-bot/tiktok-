@@ -13,6 +13,7 @@ import {
   DEFAULT_TEXT_PRESET,
   REQUIRED_TEXT_KEYS,
   SAFETY_CRITICAL_TEXT_KEYS,
+  resolvePostingPlan,
 } from './config.js';
 import * as controller from './controller.js';
 import { recentLogs, subscribe } from './logBus.js';
@@ -74,6 +75,14 @@ app.put('/api/settings', (req, res) => {
     const window = settings.postingWindow;
     if (window && window.enabled && Number(window.startHour) >= Number(window.endHour)) {
       throw new Error('允许发布的时间段：开始时间必须早于结束时间，否则会一直卡在时间段外发不出去');
+    }
+    // 配错的节点宁可当场拒绝，也不要存进去——存进去之后每一轮tick都会抛错，
+    // 表现成"所有账号都莫名其妙暂停"，比保存失败难查得多。
+    if (settings.postingSlots && settings.postingSlots.enabled !== false) {
+      resolvePostingPlan(settings); // 格式/顺序/重复都在这里校验，不合法直接抛
+      if (!settings.postingSlots.slots || !settings.postingSlots.slots.length) {
+        throw new Error('至少要留一个发布时间节点，否则永远不会发布');
+      }
     }
     saveSettings(settings);
     res.json({ ok: true });

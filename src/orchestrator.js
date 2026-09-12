@@ -6,7 +6,7 @@ import {
   resolveHashtags,
   resolveDailyLimit,
   resolveTimezone,
-  resolvePostingWindow,
+  resolvePostingPlan,
 } from './config.js';
 import { createAdapter } from './browserAdapters/index.js';
 import { createLogger } from './logger.js';
@@ -15,7 +15,13 @@ import { scanDirectory, syncFilesIntoQueue, deletePublishedFile } from './folder
 import { runOneUploadCycle } from './browser/tiktokStudio.js';
 import { classifyError, retryDelayMs, maxRetries } from './errorPolicy.js';
 import { notify } from './notifier.js';
-import { rolloverIfNewDay, hasQuotaRemaining, isWithinPostingWindow, nextPostingWindowStartMs } from './dailyQuota.js';
+import {
+  rolloverIfNewDay,
+  hasQuotaRemaining,
+  isWithinPostingWindow,
+  currentDayKey,
+  evaluateSlots,
+} from './dailyQuota.js';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -56,7 +62,9 @@ async function pauseAndNotify(account, settings, { reason, code, log, howToFix }
   }
 }
 
-export async function syncAccountFolder(account, settings, log) {
+// quiet: 没有任何变化时不打日志。调度循环每 30 秒扫一次，不加这个会一直刷
+// "扫描完成，文件夹和队列一致"；网页上手动点"扫描"时不传 quiet，照常给回音。
+export async function syncAccountFolder(account, settings, log, { quiet = false } = {}) {
   const state = getState(account.name);
   let records;
   try {
@@ -76,7 +84,7 @@ export async function syncAccountFolder(account, settings, log) {
   if (result.added || result.removed) {
     log.info(`文件夹同步：新增 ${result.added} 个，移除 ${result.removed} 个，队列共 ${result.total} 个`);
     if (result.resumed) log.info('▶️ 已移除缺失文件的旧记录，自动发布已恢复');
-  } else {
+  } else if (!quiet) {
     log.info(`扫描完成，文件夹和队列一致（共 ${result.total} 个）`);
   }
   return result;
@@ -94,7 +102,7 @@ async function findOrOpenStudioPage(browser) {
   return pages[0] || (await ctx.newPage());
 }
 
-async function processAccountOnce(account, settings, adapter, log) {
+async function processAccountOnce(account, settings, adapter, log, slotKey = null) {
   const state = getState(account.name);
   const nextIdx = state.doneIndex + 1;
   const item = state.items[nextIdx];
@@ -145,10 +153,17 @@ async function processAccountOnce(account, settings, adapter, log) {
       latest.doneIndex = nextIdx;
       latest.pendingIndex = null;
       latest.pendingSince = null;
-      latest.nextTime = Date.now() + randomInterval(settings.minIntervalMs, settings.maxIntervalMs);
+      // 时间节点模式下由节点本身控制什么时候发，不能再叠一个随机间隔：
+      // 那个间隔可能一睡就是两三个小时，足以让账号整个错过下一个节点。
+      latest.nextTime = slotKey ? Date.now() : Date.now() + randomInterval(settings.minIntervalMs, settings.maxIntervalMs);
+      latest.lastPublishAt = Date.now();
       // 极小概率跨天卡在这几十秒里，保险起见在计数前再判一次
-      rolloverIfNewDay(latest, resolveTimezone(settings, account));
+      const rolledOver = rolloverIfNewDay(latest, resolveTimezone(settings, account));
       latest.publishedToday = (latest.publishedToday || 0) + 1;
+      // 跨天了就别记了：这个节点属于昨天，记下来会把今天同名的节点白白占掉
+      if (slotKey && !rolledOver) {
+        latest.slotsUsedToday = [...new Set([...(latest.slotsUsedToday || []), slotKey])];
+      }
       setState(account.name, latest);
       clearFailures(account.name);
 
@@ -159,7 +174,11 @@ async function processAccountOnce(account, settings, adapter, log) {
             `等 ${resolveTimezone(settings, account)} 过完这一天再继续`
         );
       } else {
-        log.info(`本条发布完成，下一条将在约 ${fmtMinutes(latest.nextTime - Date.now())} 分钟后开始`);
+        log.info(
+          slotKey
+            ? `本条发布完成（${slotKey} 这个时间节点已用掉），等下一个时间节点`
+            : `本条发布完成，下一条将在约 ${fmtMinutes(latest.nextTime - Date.now())} 分钟后开始`
+        );
       }
       if (settings.deleteAfterPublish !== false) {
         await deletePublishedFile(account.videoFolder, item, log);
@@ -215,17 +234,41 @@ async function tickAccount(settings, account, adapters) {
       setState(account.name, state);
       log.info(`${timezone} 进入新的一天，今日发布额度已刷新`);
     }
+    // 文件夹同步放在下面那些闸门【之前】：闸门管的是"什么时候发"，不该顺带把
+    // "界面上显示文件夹里还有几条"也一起冻住。节点模式一天只开四个一小时的窗口，
+    // 放在闸门后面的话，你下午三点丢进去的视频要等到 16:30 才会在界面上出现，
+    // 看着像程序坏了。这一步只是读一下本地目录，很便宜。
+    if (!Number.isInteger(state.pendingIndex)) {
+      await syncAccountFolder(account, settings, log, { quiet: true });
+    }
+
     // 今天的额度用完了，安安静静跳过，不算错误也不用暂停/通知——按账号自己的时区过了0点自动恢复
     if (!hasQuotaRemaining(state, dailyLimit)) return;
 
-    // 不在允许发布的时间段内(默认中午12点到午夜0点，按账号自己的时区)：安静跳过，
-    // 不暂停不通知。这是专门防"额度一到凌晨0点刷新，文件夹里堆着视频就连发好几条"
-    // 这种不像真人的节奏——原本只看"离上次发布过了多久"，完全不看现在是几点。
-    const window = resolvePostingWindow(settings);
-    if (!isWithinPostingWindow(Date.now(), timezone, window)) return;
-
-    if (!Number.isInteger(state.pendingIndex)) {
-      await syncAccountFolder(account, settings, log);
+    // 到点了没？两种模式都是"没到就安安静静跳过"，不暂停不通知。
+    //
+    // 时间节点模式(默认)：一天几个固定波峰档口，每个档口最多一条，【错过不补发】。
+    // 视频做晚了就少发几条，绝不在晚上把当天额度硬塞完——五个半小时连发四条是
+    // 被判"营销灌水"的典型特征，而且前一条还没在初始流量池里跑完就被下一条截断。
+    //
+    // 时间段模式(旧行为)：只要在时段内、间隔够了就发。
+    const plan = resolvePostingPlan(settings);
+    let slotKey = null;
+    if (plan.mode === 'slots') {
+      const decision = evaluateSlots({
+        nowMs: Date.now(),
+        timezone,
+        dayKey: currentDayKey(timezone),
+        slots: plan.slots,
+        accountName: account.name,
+        usedKeys: state.slotsUsedToday || [],
+        minGapMs: plan.minGapMs,
+        lastPublishAt: state.lastPublishAt,
+      });
+      if (!decision.due) return;
+      slotKey = decision.due.key;
+    } else if (!isWithinPostingWindow(Date.now(), timezone, plan.window)) {
+      return;
     }
 
     const fresh = getState(account.name);
@@ -237,7 +280,7 @@ async function tickAccount(settings, account, adapters) {
     const adapter = adapters.get(account.browser);
     processingAccounts.add(account.name);
     try {
-      await processAccountOnce(account, settings, adapter, log);
+      await processAccountOnce(account, settings, adapter, log, slotKey);
     } finally {
       processingAccounts.delete(account.name);
     }

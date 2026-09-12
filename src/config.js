@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, copyFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { parseHm } from './dailyQuota.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_DIR = path.join(__dirname, '..', 'config');
@@ -134,6 +135,58 @@ export function resolveTimezone(settings, account) {
 // 避免额度一到凌晨0点刷新就立刻发，堆积视频时会变成"凌晨连发4条"这种不像真人的节奏。
 // 只做全局设置，没做成账号级覆盖：时段本身(几点到几点)跟地区无关，地区差异已经
 // 由 resolveTimezone 处理了——同样的"中午到午夜"，套到账号自己的时区上就是当地时间。
+// 一天里的固定发布节点。默认这四个是按带货流量波峰排的：
+// 午休(手机使用率开始爬升，跑基础完播) / 下班通勤(给晚高峰留两小时蓄水期) /
+// 晚高峰(全天流量最集中、出单主力) / 睡前(冲动下单最频繁)。
+// 每个节点是一个区间而不是一个点：实际发布时刻在区间里随机取，不卡整点——
+// 整点是竞品和各种定时脚本集中释放的时间。
+export const DEFAULT_POSTING_SLOTS = [
+  { start: '11:30', end: '12:30', label: '午休高峰' },
+  { start: '16:30', end: '17:30', label: '下班通勤' },
+  { start: '19:30', end: '20:30', label: '核心晚高峰' },
+  { start: '21:30', end: '22:30', label: '睡前冲动期' },
+];
+
+export const DEFAULT_MIN_GAP_MINUTES = 90;
+
+// 发布排期。两种模式二选一：
+//   slots  固定时间节点(默认)，每个节点当天最多发一条，错过不补发
+//   window 旧的"时间段内随时发"
+//
+// 没配过 postingSlots 的老配置会落到 slots 模式 —— 这是这次改动有意为之的：
+// 均匀铺开发布会把额度浪费在流量低谷，而且视频做晚了会在晚上连发好几条。
+// 想回到旧行为就把 postingSlots.enabled 设成 false。
+export function resolvePostingPlan(settings) {
+  const raw = (settings && settings.postingSlots) || {};
+  if (raw.enabled === false) {
+    return { mode: 'window', slots: [], minGapMs: 0, window: resolvePostingWindow(settings) };
+  }
+  const rawSlots = Array.isArray(raw.slots) && raw.slots.length ? raw.slots : DEFAULT_POSTING_SLOTS;
+  const slots = [];
+  for (const slot of rawSlots) {
+    const start = parseHm(slot && slot.start);
+    const end = parseHm(slot && slot.end);
+    // 配错了宁可停下报错，也不要默默退回"随时发"——那等于保护静默失效了
+    if (start === null || end === null) {
+      throw new Error(`发布时间节点格式不对：${JSON.stringify(slot)}，应该是 {"start":"11:30","end":"12:30"} 这样的24小时制`);
+    }
+    if (end <= start) {
+      throw new Error(`发布时间节点 ${slot.start}-${slot.end} 的结束时间不晚于开始时间；跨午夜的节点请拆成两个`);
+    }
+    slots.push({ start: slot.start.trim(), end: slot.end.trim(), label: (slot.label || '').trim() });
+  }
+  slots.sort((a, b) => parseHm(a.start) - parseHm(b.start));
+  const seen = new Set();
+  for (const slot of slots) {
+    if (seen.has(slot.start)) throw new Error(`有两个发布时间节点都是 ${slot.start} 开始，请改成不同的开始时间`);
+    seen.add(slot.start);
+  }
+  const minGapMinutes = Number.isFinite(raw.minGapMinutes) && raw.minGapMinutes >= 0
+    ? raw.minGapMinutes
+    : DEFAULT_MIN_GAP_MINUTES;
+  return { mode: 'slots', slots, minGapMs: minGapMinutes * 60000, minGapMinutes, window: null };
+}
+
 export function resolvePostingWindow(settings) {
   const w = settings.postingWindow || {};
   const startHour = Number.isFinite(w.startHour) ? w.startHour : 12;

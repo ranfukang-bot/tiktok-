@@ -56,7 +56,11 @@ const SETTINGS = {
   minIntervalMs: 1, maxIntervalMs: 2, concurrency: 1, folderScanIntervalMs: 1000,
   videoExtensions: ['.mp4'], hashtagKeywords: ['fyp'], dailyPublishLimit: 4,
   timezone: 'Asia/Jakarta',
-  postingWindow: { enabled: false }, // 关掉时段限制，这里只测关窗口
+  // 关掉所有时间闸门，这里只测关窗口这一件事。
+  // 注意 postingSlots 也要显式关掉：不配的话默认就是固定时间节点模式，
+  // 那样这个测试只有在恰好跑在某个节点里的时候才会发布，变成看时钟的随机测试。
+  postingSlots: { enabled: false },
+  postingWindow: { enabled: false },
   retryBackoffMs: [1000], notifications: { enabled: false },
 };
 

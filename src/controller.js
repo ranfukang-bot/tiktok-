@@ -1,9 +1,9 @@
-import { loadSettings, loadAccounts, loadAllAccounts, resolveDailyLimit, resolveTimezone, resolvePostingWindow } from './config.js';
+import { loadSettings, loadAccounts, loadAllAccounts, resolveDailyLimit, resolveTimezone, resolvePostingPlan } from './config.js';
 import { tickAll, isAccountProcessing, syncAccountFolder } from './orchestrator.js';
 import { getState, setState } from './stateStore.js';
 import { createLogger } from './logger.js';
 import { deletePublishedFile } from './folderScanner.js';
-import { currentDayKey, isWithinPostingWindow, nextPostingWindowStartMs } from './dailyQuota.js';
+import { currentDayKey, isWithinPostingWindow, nextPostingWindowStartMs, evaluateSlots, slotTargetsForDay } from './dailyQuota.js';
 
 let running = false;
 let loopPromise = null;
@@ -57,8 +57,30 @@ export function getStatus() {
       // 这里只算展示用的数字，不落盘：真正的跨天重置由调度循环下一轮tick做，
       // GET接口不该有副作用。跨天了就当作今天还没发过来显示，不用等下一轮tick。
       const publishedToday = state.publishDayKey === currentDayKey(timezone) ? state.publishedToday || 0 : 0;
-      const postingWindow = resolvePostingWindow(settings);
-      const inPostingWindow = isWithinPostingWindow(Date.now(), timezone, postingWindow);
+      const plan = resolvePostingPlan(settings);
+      let inPostingWindow = true;
+      let nextWindowStart = null;
+      let slotsUsed = 0;
+      let slotsTotal = 0;
+      if (plan.mode === 'slots') {
+        const decision = evaluateSlots({
+          nowMs: Date.now(),
+          timezone,
+          dayKey: currentDayKey(timezone),
+          slots: plan.slots,
+          accountName: account.name,
+          usedKeys: state.publishDayKey === currentDayKey(timezone) ? state.slotsUsedToday || [] : [],
+          minGapMs: plan.minGapMs,
+          lastPublishAt: state.lastPublishAt,
+        });
+        slotsTotal = plan.slots.length;
+        slotsUsed = slotsTotal - decision.remainingSlots;
+        inPostingWindow = Boolean(decision.due);
+        nextWindowStart = decision.due ? null : decision.nextAt;
+      } else {
+        inPostingWindow = isWithinPostingWindow(Date.now(), timezone, plan.window);
+        nextWindowStart = inPostingWindow ? null : nextPostingWindowStartMs(Date.now(), timezone, plan.window);
+      }
       return {
         name: account.name,
         browser: account.browser,
@@ -79,7 +101,10 @@ export function getStatus() {
         dailyLimit: Number.isFinite(dailyLimit) ? dailyLimit : null,
         quotaExhausted: Number.isFinite(dailyLimit) && publishedToday >= dailyLimit,
         inPostingWindow,
-        nextWindowStart: inPostingWindow ? null : nextPostingWindowStartMs(Date.now(), timezone, postingWindow),
+        nextWindowStart,
+        scheduleMode: plan.mode,
+        slotsUsedToday: slotsUsed,
+        slotsTotal,
       };
     });
     void settings;
@@ -102,7 +127,24 @@ export async function resolveUncertain(accountName, decision) {
       publishedItem = state.items[uncertainIndex];
       state.doneIndex = uncertainIndex;
     }
-    state.nextTime = Date.now() + settings.minIntervalMs + Math.random() * (settings.maxIntervalMs - settings.minIntervalMs);
+    // 这一条确实发出去了，就得跟自动发布走一样的记账：记下发布时刻(卡最小间隔用)，
+    // 并把当前正开着的那个时间节点标记成已用掉——否则确认完之后会在同一个节点里
+    // 立刻再发一条。
+    state.lastPublishAt = Date.now();
+    const plan = resolvePostingPlan(settings);
+    if (plan.mode === 'slots') {
+      state.nextTime = Date.now();
+      const timezone = resolveTimezone(settings, { name: accountName });
+      const dayKey = currentDayKey(timezone);
+      const openSlot = slotTargetsForDay({ dayKey, timezone, slots: plan.slots, accountName })
+        .find((t) => Date.now() >= t.startMs && Date.now() < t.endMs);
+      if (openSlot) {
+        if (state.publishDayKey !== dayKey) { state.publishDayKey = dayKey; state.publishedToday = 0; state.slotsUsedToday = []; }
+        state.slotsUsedToday = [...new Set([...(state.slotsUsedToday || []), openSlot.key])];
+      }
+    } else {
+      state.nextTime = Date.now() + settings.minIntervalMs + Math.random() * (settings.maxIntervalMs - settings.minIntervalMs);
+    }
   } else {
     state.nextTime = Date.now();
   }
