@@ -21,6 +21,7 @@ import {
   isWithinPostingWindow,
   currentDayKey,
   evaluateSlots,
+  assertSlotStillOpen,
 } from './dailyQuota.js';
 
 function sleep(ms) {
@@ -102,7 +103,7 @@ async function findOrOpenStudioPage(browser) {
   return pages[0] || (await ctx.newPage());
 }
 
-async function processAccountOnce(account, settings, adapter, log, slotKey = null) {
+async function processAccountOnce(account, settings, adapter, log, slot = null) {
   const state = getState(account.name);
   const nextIdx = state.doneIndex + 1;
   const item = state.items[nextIdx];
@@ -134,10 +135,18 @@ async function processAccountOnce(account, settings, adapter, log, slotKey = nul
         config,
         log,
         beforePublishClick: async () => {
+          // 进流程时没过点，不代表现在没过点：上传+检查可能花掉十几二十分钟。
+          // 这个检查必须在 publishAttempted 置true【之前】，否则一旦在这里中断，
+          // 错误会被分类成"可能已经点过发布"，账号会被暂停等人确认——可我们
+          // 恰恰是还没点。
+          assertSlotStillOpen(slot, Date.now());
           publishAttempted = true;
           const s = getState(account.name);
           s.pendingIndex = nextIdx;
           s.pendingSince = Date.now();
+          // 记下这一条是为哪个节点发的：万一发布结果不确定，人可能过几个小时才来
+          // 确认，那时候得按【当初这个】节点记账，不能占掉确认那一刻的节点。
+          s.pendingSlot = slot ? { key: slot.key, dayKey: slot.dayKey, start: slot.start, end: slot.end } : null;
           setState(account.name, s);
         },
       });
@@ -155,14 +164,15 @@ async function processAccountOnce(account, settings, adapter, log, slotKey = nul
       latest.pendingSince = null;
       // 时间节点模式下由节点本身控制什么时候发，不能再叠一个随机间隔：
       // 那个间隔可能一睡就是两三个小时，足以让账号整个错过下一个节点。
-      latest.nextTime = slotKey ? Date.now() : Date.now() + randomInterval(settings.minIntervalMs, settings.maxIntervalMs);
+      latest.nextTime = slot ? Date.now() : Date.now() + randomInterval(settings.minIntervalMs, settings.maxIntervalMs);
       // 极小概率跨天卡在这几十秒里，保险起见在计数前再判一次
       const rolledOver = rolloverIfNewDay(latest, resolveTimezone(settings, account));
       latest.publishedToday = (latest.publishedToday || 0) + 1;
       // 跨天了就别记了：这个节点属于昨天，记下来会把今天同名的节点白白占掉
-      if (slotKey && !rolledOver) {
-        latest.slotsUsedToday = [...new Set([...(latest.slotsUsedToday || []), slotKey])];
+      if (slot && !rolledOver) {
+        latest.slotsUsedToday = [...new Set([...(latest.slotsUsedToday || []), slot.key])];
       }
+      latest.pendingSlot = null;
       setState(account.name, latest);
       clearFailures(account.name);
 
@@ -174,8 +184,8 @@ async function processAccountOnce(account, settings, adapter, log, slotKey = nul
         );
       } else {
         log.info(
-          slotKey
-            ? `本条发布完成（${slotKey} 这个时间节点已用掉），等下一个时间节点`
+          slot
+            ? `本条发布完成（${slot.key} 这个时间节点已用掉），等下一个时间节点`
             : `本条发布完成，下一条将在约 ${fmtMinutes(latest.nextTime - Date.now())} 分钟后开始`
         );
       }
@@ -252,18 +262,19 @@ async function tickAccount(settings, account, adapters) {
     //
     // 时间段模式(旧行为)：只要在时段内、间隔够了就发。
     const plan = resolvePostingPlan(settings);
-    let slotKey = null;
+    const dayKey = currentDayKey(timezone);
+    let slot = null;
     if (plan.mode === 'slots') {
       const decision = evaluateSlots({
         nowMs: Date.now(),
         timezone,
-        dayKey: currentDayKey(timezone),
+        dayKey,
         slots: plan.slots,
         accountName: account.name,
         usedKeys: state.slotsUsedToday || [],
       });
       if (!decision.due) return;
-      slotKey = decision.due.key;
+      slot = { ...decision.due, dayKey };
     } else if (!isWithinPostingWindow(Date.now(), timezone, plan.window)) {
       return;
     }
@@ -272,16 +283,24 @@ async function tickAccount(settings, account, adapters) {
     if (fresh.paused || Number.isInteger(fresh.pendingIndex)) return;
     const nextIdx = fresh.doneIndex + 1;
     if (nextIdx >= fresh.items.length) return;
-    if (Date.now() < fresh.nextTime) return;
+    // nextTime 是【时段模式】那套随机发布间隔，节点模式下不该再看它：
+    // 从时段模式升级过来的状态文件里可能留着一个几小时后的 nextTime，
+    // 那会把整个 19:30-20:30 节点白白挡掉。失败退避用的是 retryAt，在上面单独判。
+    if (plan.mode === 'window' && Date.now() < fresh.nextTime) return;
 
     const adapter = adapters.get(account.browser);
     processingAccounts.add(account.name);
     try {
-      await processAccountOnce(account, settings, adapter, log, slotKey);
+      await processAccountOnce(account, settings, adapter, log, slot);
     } finally {
       processingAccounts.delete(account.name);
     }
   } catch (err) {
+    // 过点放弃不是故障：不计失败、不暂停、不通知，视频留在队列里等下一个节点
+    if (err.slotExpired) {
+      log.info(err.message);
+      return;
+    }
     await handleAccountError(account, settings, err, log);
   }
 }

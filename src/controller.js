@@ -3,7 +3,7 @@ import { tickAll, isAccountProcessing, syncAccountFolder } from './orchestrator.
 import { getState, setState } from './stateStore.js';
 import { createLogger } from './logger.js';
 import { deletePublishedFile } from './folderScanner.js';
-import { currentDayKey, isWithinPostingWindow, nextPostingWindowStartMs, evaluateSlots, slotTargetsForDay } from './dailyQuota.js';
+import { currentDayKey, isWithinPostingWindow, nextPostingWindowStartMs, evaluateSlots, creditedSlotOnConfirm } from './dailyQuota.js';
 
 let running = false;
 let loopPromise = null;
@@ -125,18 +125,22 @@ export async function resolveUncertain(accountName, decision) {
       publishedItem = state.items[uncertainIndex];
       state.doneIndex = uncertainIndex;
     }
-    // 这一条确实发出去了，就把当前正开着的那个时间节点标记成已用掉，
-    // 否则确认完之后会在同一个节点里立刻再发一条。
+    // 这一条确实发出去了，就把它【当初发的时候】占的那个节点标记成已用掉。
+    //
+    // 关键是用 pendingSlot 里存的节点，不是"确认这一刻正开着的节点"：中午发的
+    // 一条卡在结果不确定，人可能晚上19:45才来点确认，那时候按当前节点记账会把
+    // 晚上的节点白白占掉，晚上该发的那条就发不出去了。
+    //
+    // 时区也必须用账号自己的：全局印尼、账号菲律宾时，按全局时区算当天日期会错。
     const plan = resolvePostingPlan(settings);
     if (plan.mode === 'slots') {
       state.nextTime = Date.now();
-      const timezone = resolveTimezone(settings, { name: accountName });
-      const dayKey = currentDayKey(timezone);
-      const openSlot = slotTargetsForDay({ dayKey, timezone, slots: plan.slots, accountName })
-        .find((t) => Date.now() >= t.startMs && Date.now() < t.endMs);
-      if (openSlot) {
+      const account = loadAllAccounts().find((a) => a.name === accountName);
+      const dayKey = currentDayKey(resolveTimezone(settings, account || { name: accountName }));
+      const credited = creditedSlotOnConfirm(state.pendingSlot, dayKey);
+      if (credited) {
         if (state.publishDayKey !== dayKey) { state.publishDayKey = dayKey; state.publishedToday = 0; state.slotsUsedToday = []; }
-        state.slotsUsedToday = [...new Set([...(state.slotsUsedToday || []), openSlot.key])];
+        state.slotsUsedToday = [...new Set([...(state.slotsUsedToday || []), credited])];
       }
     } else {
       state.nextTime = Date.now() + settings.minIntervalMs + Math.random() * (settings.maxIntervalMs - settings.minIntervalMs);
@@ -149,6 +153,7 @@ export async function resolveUncertain(accountName, decision) {
   state.pauseCode = '';
   state.pendingIndex = null;
   state.pendingSince = null;
+  state.pendingSlot = null;
   setState(accountName, state);
 
   if (publishedItem && settings.deleteAfterPublish !== false) {

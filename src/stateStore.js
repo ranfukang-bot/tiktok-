@@ -37,6 +37,9 @@ function defaultState() {
     // 固定时间节点模式：今天已经用掉了哪几个节点(存节点的开始时间，如 "19:30")。
     // 跨天跟 publishedToday 一起清空。
     slotsUsedToday: [],
+    // 正在等发布结果确认的那一条当初占的是哪个节点(含当天日期)。人工确认时按这份
+    // 记账，而不是按"确认那一刻"的节点——中午发的不该占掉晚上的节点。
+    pendingSlot: null,
     updatedAt: Date.now(),
   };
 }

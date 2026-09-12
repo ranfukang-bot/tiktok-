@@ -180,3 +180,29 @@ export function evaluateSlots({ nowMs, timezone, dayKey, slots, accountName, use
 
   return { due, nextAt, remainingSlots: upcoming.length, targets };
 }
+
+// 真正点"发布"之前的最后一道闸：进流程时没过点，不代表现在没过点——
+// 上传+双绿检查可能花掉十几二十分钟。
+//
+// err.slotExpired 这个标记是有分量的：调用方靠它把这种情况当作"安静跳过"，
+// 而不是故障。要是漏了这个标记，过点放弃会被算成一次失败，攒够次数账号就被
+// 暂停并推送通知了。
+export function assertSlotStillOpen(slot, nowMs) {
+  if (!slot || nowMs < slot.endMs) return;
+  const err = new Error(
+    `上传完成时已经过了 ${slot.start}-${slot.end} 这个时间节点，按"过点不发"的规则放弃这一条，` +
+      '视频留在队列里等下一个节点'
+  );
+  err.slotExpired = true;
+  throw err;
+}
+
+// 人工确认"已发布"时，该把哪个节点记成已用掉。
+//
+// 用的是这一条【当初发的时候】占的节点(pendingSlot)，不是确认那一刻的节点：
+// 中午发的一条卡在结果不确定，人可能晚上19:45才来确认，按当前节点记账会把晚上
+// 的节点白白占掉。跨天之后才确认的，那是昨天的节点，今天同名的节点必须留着。
+export function creditedSlotOnConfirm(pendingSlot, dayKey) {
+  if (!pendingSlot || !pendingSlot.key) return null;
+  return pendingSlot.dayKey === dayKey ? pendingSlot.key : null;
+}

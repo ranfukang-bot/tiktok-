@@ -463,6 +463,7 @@ const DEFAULT_SLOTS = [
   { start: '21:30', end: '22:30', label: '睡前冲动期' },
 ];
 let slotRows = [];
+let usingDefaultSlots = false;
 
 function hmToMin(text) {
   const m = /^(\d{1,2}):(\d{2})$/.exec(String(text || '').trim());
@@ -523,6 +524,10 @@ function updateSlotsSummary() {
   let note = `按这些节点，每天最多发 <b>${sorted.length}</b> 条`;
   if (limit && limit < sorted.length) note += `；但每日额度是 ${limit} 条，所以实际最多 <b>${limit}</b> 条（发满就停，剩下的节点空着）`;
   if (limit && limit > sorted.length) note += `；每日额度设的是 ${limit} 条，比节点还多，多出来的发不掉——要么加节点，要么把额度改成 ${sorted.length}`;
+  if (usingDefaultSlots) {
+    note = '<b style="color:var(--amber)">这是升级后的默认节点，你还没自己配过。' +
+      '以前"时段内随时发"的设置已经不再生效——不想用节点就把上面的开关关掉。</b><br>' + note;
+  }
   el.innerHTML = note;
 }
 
@@ -572,6 +577,9 @@ function fillSettingsForm(settings) {
   document.getElementById('s-slots-enabled').checked = slotCfg.enabled !== false;
   slotRows = (Array.isArray(slotCfg.slots) && slotCfg.slots.length ? slotCfg.slots : DEFAULT_SLOTS)
     .map((x) => ({ start: x.start || '', end: x.end || '', label: x.label || '' }));
+  // 从旧版本升级上来的配置里没有 postingSlots，会直接落到节点模式。这是有意的
+  // 行为变更，但得让人看见——尤其是以前明确把时间限制关掉了的。
+  usingDefaultSlots = !Array.isArray(slotCfg.slots) || !slotCfg.slots.length;
   renderSlots();
   updateScheduleMode();
 
