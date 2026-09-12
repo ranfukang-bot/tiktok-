@@ -22,6 +22,7 @@ import {
   currentDayKey,
   evaluateSlots,
   assertSlotStillOpen,
+  recordConfirmedQuota,
 } from './dailyQuota.js';
 
 function sleep(ms) {
@@ -160,16 +161,15 @@ async function processAccountOnce(account, settings, adapter, log, slot = null) 
     if (result.published) {
       publishConfirmed = true;
       latest.doneIndex = nextIdx;
+      // 在清掉 pendingSince 之前按实际发布尝试日期记账，跨午夜确认不扣新一天额度。
+      const countedToday = recordConfirmedQuota(latest, resolveTimezone(settings, account));
       latest.pendingIndex = null;
       latest.pendingSince = null;
       // 时间节点模式下由节点本身控制什么时候发，不能再叠一个随机间隔：
       // 那个间隔可能一睡就是两三个小时，足以让账号整个错过下一个节点。
       latest.nextTime = slot ? Date.now() : Date.now() + randomInterval(settings.minIntervalMs, settings.maxIntervalMs);
-      // 极小概率跨天卡在这几十秒里，保险起见在计数前再判一次
-      const rolledOver = rolloverIfNewDay(latest, resolveTimezone(settings, account));
-      latest.publishedToday = (latest.publishedToday || 0) + 1;
       // 跨天了就别记了：这个节点属于昨天，记下来会把今天同名的节点白白占掉
-      if (slot && !rolledOver) {
+      if (slot && countedToday && slot.dayKey === latest.publishDayKey) {
         latest.slotsUsedToday = [...new Set([...(latest.slotsUsedToday || []), slot.key])];
       }
       latest.pendingSlot = null;

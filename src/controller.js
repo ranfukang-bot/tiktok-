@@ -3,7 +3,7 @@ import { tickAll, isAccountProcessing, syncAccountFolder } from './orchestrator.
 import { getState, setState } from './stateStore.js';
 import { createLogger } from './logger.js';
 import { deletePublishedFile } from './folderScanner.js';
-import { currentDayKey, isWithinPostingWindow, nextPostingWindowStartMs, evaluateSlots, creditedSlotOnConfirm, slotTargetsForDay } from './dailyQuota.js';
+import { currentDayKey, isWithinPostingWindow, nextPostingWindowStartMs, evaluateSlots, creditedSlotOnConfirm, slotTargetsForDay, recordConfirmedQuota } from './dailyQuota.js';
 
 let running = false;
 let loopPromise = null;
@@ -135,17 +135,8 @@ export async function resolveUncertain(accountName, decision) {
     const plan = resolvePostingPlan(settings);
     const account = loadAllAccounts().find((a) => a.name === accountName);
     const timezone = resolveTimezone(settings, account || { name: accountName });
-    const dayKey = currentDayKey(timezone);
-    // 跨天了先把当天计数清零，再往上加——不然会累到昨天的数上去
-    if (state.publishDayKey !== dayKey) {
-      state.publishDayKey = dayKey;
-      state.publishedToday = 0;
-      state.slotsUsedToday = [];
-    }
-    // 这一条确实发出去了，就得算进当天额度。自动发布那条路一直在加，人工确认这条
-    // 路从来没加过(这个漏洞比时间节点功能早得多)：每日额度设2、有4个节点的话，
-    // 人工确认的那条不计数，一天就可能发到3条。
-    state.publishedToday = (state.publishedToday || 0) + 1;
+    recordConfirmedQuota(state, timezone);
+    const dayKey = state.publishDayKey;
     if (plan.mode === 'slots') {
       state.nextTime = Date.now();
       const targets = slotTargetsForDay({ dayKey, timezone, slots: plan.slots, accountName });

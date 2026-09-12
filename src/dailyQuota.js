@@ -2,7 +2,7 @@
 // 用 Intl.DateTimeFormat 直接问系统"这个时区现在是哪一天"，不用自己算UTC偏移，
 // 也不用惦记夏令时（印尼没有夏令时，但这个写法换成任何一个IANA时区都一样稳）。
 
-export function currentDayKey(timezone) {
+export function currentDayKey(timezone, nowMs = Date.now()) {
   // en-CA 这个locale格式化出来正好是 YYYY-MM-DD，省得自己拼字符串
   // 用 Date.now() 而不是 new Date()：两者在生产里完全一样，但测试冻结时钟时
   // 只能拦住 Date.now，写成 new Date() 的话这里会漏出真实系统日期，
@@ -12,7 +12,27 @@ export function currentDayKey(timezone) {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-  }).format(new Date(Date.now()));
+  }).format(new Date(nowMs));
+}
+
+// 自动确认与人工确认共用记账规则：按点击发布的日期，而不是收到确认的日期。
+// 只维护今天的额度；昨天的发布不扣今天额度，也不覆盖今天已有的计数。
+export function recordConfirmedQuota(state, timezone, nowMs = Date.now()) {
+  const dayKey = currentDayKey(timezone, nowMs);
+  const since = state.pendingSince;
+  // 极老记录连发布时刻和节点日期都没有时，退回 dayKey —— 也就是保守地占今天
+  // 一条额度。宁可少发一条，也不要因为记不上账而突破每日上限。
+  const publishedDay = Number.isFinite(since) && since > 0
+    ? currentDayKey(timezone, since)
+    : state.pendingSlot?.dayKey || dayKey;
+  if (state.publishDayKey !== dayKey) {
+    state.publishDayKey = dayKey;
+    state.publishedToday = 0;
+    state.slotsUsedToday = [];
+  }
+  if (publishedDay !== dayKey) return false;
+  state.publishedToday = (state.publishedToday || 0) + 1;
+  return true;
 }
 
 // 检查"今天"有没有变；跨天了就把这个账号的计数清零。

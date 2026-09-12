@@ -51,19 +51,8 @@ test('过点检查必须排在"已尝试发布"之前', () => {
   assert.ok(attempted > guard, '过点检查必须在 publishAttempted 置true之前');
 });
 
-test('人工确认"已发布"必须计入当天额度', () => {
-  // resolveUncertain 读的是真机上的 config/，没法在这里造确定性夹具，
-  // 所以这条只是源码守卫，防止这行被误删——不是行为测试。
-  // 漏掉的后果：每日额度设2、节点有4个时，人工确认的那条不计数，一天会发到3条。
-  const src = readFileSync(new URL('../src/controller.js', import.meta.url), 'utf8');
-  const fn = src.slice(src.indexOf('export async function resolveUncertain'));
-  assert.match(fn, /state\.publishedToday = \(state\.publishedToday \|\| 0\) \+ 1;/);
-  // 加之前必须先处理跨天，否则会累到昨天的计数上
-  assert.ok(
-    fn.indexOf('state.publishDayKey = dayKey') < fn.indexOf('state.publishedToday = (state.publishedToday || 0) + 1'),
-    '跨天清零要排在累加之前'
-  );
-});
+// 人工确认额度由 confirm-publication.test.mjs 用隔离配置调用真实 controller 验证，
+// 不再只用源码正则守卫；不需要操作真实账号。
 
 // ===== 2. 人工确认要用账号自己的时区 =====
 test('人工确认按账号自己的时区算当天日期，不能回退到全局时区', () => {
