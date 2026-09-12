@@ -4,12 +4,15 @@
 
 export function currentDayKey(timezone) {
   // en-CA 这个locale格式化出来正好是 YYYY-MM-DD，省得自己拼字符串
+  // 用 Date.now() 而不是 new Date()：两者在生产里完全一样，但测试冻结时钟时
+  // 只能拦住 Date.now，写成 new Date() 的话这里会漏出真实系统日期，
+  // 导致"冻结了时钟"的测试其实只在某一天能过。
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: timezone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-  }).format(new Date());
+  }).format(new Date(Date.now()));
 }
 
 // 检查"今天"有没有变；跨天了就把这个账号的计数清零。
@@ -202,7 +205,18 @@ export function assertSlotStillOpen(slot, nowMs) {
 // 用的是这一条【当初发的时候】占的节点(pendingSlot)，不是确认那一刻的节点：
 // 中午发的一条卡在结果不确定，人可能晚上19:45才来确认，按当前节点记账会把晚上
 // 的节点白白占掉。跨天之后才确认的，那是昨天的节点，今天同名的节点必须留着。
-export function creditedSlotOnConfirm(pendingSlot, dayKey) {
-  if (!pendingSlot || !pendingSlot.key) return null;
-  return pendingSlot.dayKey === dayKey ? pendingSlot.key : null;
+// targets 是【当天】的节点时刻表，用来给没有 pendingSlot 的历史记录兜底。
+export function creditedSlotOnConfirm(state, dayKey, targets = []) {
+  const pending = state && state.pendingSlot;
+  if (pending && pending.key) {
+    return pending.dayKey === dayKey ? pending.key : null;
+  }
+  // 升级之前就卡在"待确认"的记录里没有 pendingSlot。这种不能当成"不需要记账"——
+  // 原节点要是还没结束，确认完恢复后会在同一个节点里再发一条。
+  // 好在 pendingSince(当初点发布的那一刻)从第一版就有，拿它反查当初落在哪个节点，
+  // 比"按确认那一刻的节点算"准确得多。
+  const since = state && state.pendingSince;
+  if (!Number.isFinite(since)) return null;
+  const hit = targets.find((t) => since >= t.startMs && since < t.endMs);
+  return hit ? hit.key : null;
 }

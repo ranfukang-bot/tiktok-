@@ -3,7 +3,7 @@
 // 原来的节点测试全都覆盖不到。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, rmSync, mkdtempSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -51,6 +51,20 @@ test('过点检查必须排在"已尝试发布"之前', () => {
   assert.ok(attempted > guard, '过点检查必须在 publishAttempted 置true之前');
 });
 
+test('人工确认"已发布"必须计入当天额度', () => {
+  // resolveUncertain 读的是真机上的 config/，没法在这里造确定性夹具，
+  // 所以这条只是源码守卫，防止这行被误删——不是行为测试。
+  // 漏掉的后果：每日额度设2、节点有4个时，人工确认的那条不计数，一天会发到3条。
+  const src = readFileSync(new URL('../src/controller.js', import.meta.url), 'utf8');
+  const fn = src.slice(src.indexOf('export async function resolveUncertain'));
+  assert.match(fn, /state\.publishedToday = \(state\.publishedToday \|\| 0\) \+ 1;/);
+  // 加之前必须先处理跨天，否则会累到昨天的计数上
+  assert.ok(
+    fn.indexOf('state.publishDayKey = dayKey') < fn.indexOf('state.publishedToday = (state.publishedToday || 0) + 1'),
+    '跨天清零要排在累加之前'
+  );
+});
+
 // ===== 2. 人工确认要用账号自己的时区 =====
 test('人工确认按账号自己的时区算当天日期，不能回退到全局时区', () => {
   const settings = { timezone: 'Asia/Jakarta' };          // 全局印尼 UTC+7
@@ -66,20 +80,39 @@ test('人工确认按账号自己的时区算当天日期，不能回退到全�
 });
 
 // ===== 3. 延迟确认要按原节点记账 =====
+// 故意选一个不是今天的日期：如果哪里还偷偷用了系统时钟，这条测试就会挂
+const DAY = '2026-01-15';
+const TZ = 'Asia/Jakarta';
+const SLOTS = [{ start: '11:30', end: '12:30' }, { start: '19:30', end: '20:30' }];
+const TARGETS = slotTargetsForDay({ dayKey: DAY, timezone: TZ, slots: SLOTS, accountName: '回归号' });
+const jakarta = (h, m) => Date.UTC(2026, 0, 15, h - 7, m);
+
 test('中午发的卡住，晚上才确认：占掉的是中午那个节点，不是晚上的', () => {
-  const pending = { key: '11:30', dayKey: '2026-09-12', start: '11:30', end: '12:30' };
-  // 同一天晚上19:45来确认 —— 记的还是中午那个节点
-  assert.equal(creditedSlotOnConfirm(pending, '2026-09-12'), '11:30');
+  const state = { pendingSlot: { key: '11:30', dayKey: DAY }, pendingSince: jakarta(12, 5) };
+  assert.equal(creditedSlotOnConfirm(state, DAY, TARGETS), '11:30');
 });
 
 test('跨天之后才确认：不能占用新一天同名的节点', () => {
-  const pending = { key: '11:30', dayKey: '2026-09-12' };
-  assert.equal(creditedSlotOnConfirm(pending, '2026-09-13'), null);
+  const state = { pendingSlot: { key: '11:30', dayKey: DAY }, pendingSince: jakarta(12, 5) };
+  assert.equal(creditedSlotOnConfirm(state, '2026-01-16', TARGETS), null);
 });
 
-test('时段模式下没有 pendingSlot，不记任何节点', () => {
-  assert.equal(creditedSlotOnConfirm(null, '2026-09-12'), null);
-  assert.equal(creditedSlotOnConfirm({}, '2026-09-12'), null);
+// 升级之前就卡在"待确认"的记录没有 pendingSlot。当成"不需要记账"的话，原节点
+// 要是还没结束，确认完恢复后会在同一个节点里再发一条。
+test('升级前留下的待确认记录：用 pendingSince 反查出当初的节点', () => {
+  const legacy = { pendingSince: jakarta(12, 5) }; // 当初是中午那个节点里发的
+  assert.equal(creditedSlotOnConfirm(legacy, DAY, TARGETS), '11:30');
+});
+
+test('升级前的记录跨天之后才确认：同样不占用新一天的节点', () => {
+  const legacy = { pendingSince: jakarta(12, 5) };
+  const otherDayTargets = slotTargetsForDay({ dayKey: '2026-01-16', timezone: TZ, slots: SLOTS, accountName: '回归号' });
+  assert.equal(creditedSlotOnConfirm(legacy, '2026-01-16', otherDayTargets), null);
+});
+
+test('连 pendingSince 都没有时，不瞎记节点', () => {
+  assert.equal(creditedSlotOnConfirm({}, DAY, TARGETS), null);
+  assert.equal(creditedSlotOnConfirm(null, DAY, TARGETS), null);
 });
 
 // ===== 4. 旧的随机间隔不能挡住节点 =====
@@ -88,47 +121,59 @@ test('时段模式下没有 pendingSlot，不记任何节点', () => {
 const ACCOUNT = '节点回归测试号';
 const STATE_FILE = path.join(import.meta.dirname, '..', 'state', `${ACCOUNT}.json`);
 
+// 时钟是固定的：原来这里拿"当前分钟"现造一个一分钟的节点，在雅加达 23:59 跑会
+// 造出 23:59-00:00 这种被配置校验直接拒绝的区间，普通分钟末尾跑也可能在第二次
+// tick 之前就过期。改成冻结 Date.now，用真实的节点时刻表倒推出一个"肯定该发"的时刻。
+async function withFrozenClock(atMs, fn) {
+  const real = Date.now;
+  Date.now = () => atMs;
+  try { return await fn(); } finally { Date.now = real; }
+}
+
+const REG_SLOTS = [{ start: '11:30', end: '12:30' }];
+function frozenNowInsideSlot(accountName) {
+  // 用真实函数算出这个账号今天的目标时刻，再把"现在"定在它之后一毫秒
+  const targets = slotTargetsForDay({
+    dayKey: DAY, timezone: TZ, slots: REG_SLOTS, accountName,
+  });
+  return targets[0].targetMs + 1;
+}
+
+async function runTickOnce(settings, account, { prepare } = {}) {
+  let calls = 0;
+  const adapter = {
+    async startProfile() { calls += 1; throw new Error('测试到此为止，能走到这一步就说明闸门放行了'); },
+  };
+  await tick(settings, [account], new Map([['fake', adapter]]));
+  if (prepare) {
+    const state = JSON.parse(readFileSync(STATE_FILE, 'utf-8'));
+    prepare(state);
+    writeFileSync(STATE_FILE, JSON.stringify(state));
+  }
+  calls = 0;
+  await tick(settings, [account], new Map([['fake', adapter]]));
+  return calls;
+}
+
 test('状态里留着旧的随机间隔时，节点模式照样能发', async () => {
   const videoDir = mkdtempSync(path.join(tmpdir(), 'slot-regression-'));
   writeFileSync(path.join(videoDir, '123456.mp4'), 'fake');
-  const account = { name: ACCOUNT, browser: 'fake', browserId: 'x1', videoFolder: videoDir, timezone: 'Asia/Jakarta' };
+  const account = { name: ACCOUNT, browser: 'fake', browserId: 'x1', videoFolder: videoDir, timezone: TZ };
+  const settings = {
+    minIntervalMs: 1, maxIntervalMs: 2, folderScanIntervalMs: 1000, videoExtensions: ['.mp4'],
+    hashtagKeywords: ['fyp'], dailyPublishLimit: 4, timezone: TZ,
+    postingSlots: { enabled: true, slots: REG_SLOTS }, retryBackoffMs: [1000], notifications: { enabled: false },
+  };
   try {
-    // 造一个"此刻正好在窗口里"的节点：长度1分钟，所以抖动固定为0，目标时刻=开始时刻
-    const now = new Date();
-    const hhmm = new Intl.DateTimeFormat('en-GB', {
-      timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-    }).format(now);
-    const [h, m] = hhmm.split(':').map(Number);
-    const endMin = h * 60 + m + 1;
-    const pad = (x) => String(x).padStart(2, '0');
-    const slots = [{ start: hhmm, end: `${pad(Math.floor(endMin / 60) % 24)}:${pad(endMin % 60)}` }];
-    // 自检：这个节点此刻确实该发
-    const target = slotTargetsForDay({
-      dayKey: currentDayKey('Asia/Jakarta'), timezone: 'Asia/Jakarta', slots, accountName: ACCOUNT,
-    })[0];
-    assert.ok(Date.now() >= target.targetMs && Date.now() < target.endMs, '夹具没造对，节点此刻不该发');
-
-    const settings = {
-      minIntervalMs: 1, maxIntervalMs: 2, folderScanIntervalMs: 1000, videoExtensions: ['.mp4'],
-      hashtagKeywords: ['fyp'], dailyPublishLimit: 4, timezone: 'Asia/Jakarta',
-      postingSlots: { enabled: true, slots }, retryBackoffMs: [1000], notifications: { enabled: false },
-    };
-
-    // 先让 tick 扫一遍把视频放进队列，然后塞一个三小时后的 nextTime（模拟从时段模式升级过来）
-    let calls = 0;
-    const adapter = { async startProfile() { calls += 1; throw new Error('测试到此为止，能走到这一步就说明闸门放行了'); } };
-    await tick(settings, [account], new Map([['fake', adapter]]));
-    const state = JSON.parse(readFileSync(STATE_FILE, 'utf-8'));
-    state.nextTime = Date.now() + 3 * 3600 * 1000;
-    state.retryAt = null;
-    state.consecutiveFailures = 0;
-    state.paused = false;
-    state.slotsUsedToday = [];
-    state.pendingIndex = null;
-    writeFileSync(STATE_FILE, JSON.stringify(state));
-
-    calls = 0;
-    await tick(settings, [account], new Map([['fake', adapter]]));
+    const calls = await withFrozenClock(frozenNowInsideSlot(ACCOUNT), () =>
+      runTickOnce(settings, account, {
+        prepare: (state) => {
+          // 模拟从时段模式升级过来：状态里留着一个三小时后的 nextTime
+          state.nextTime = Date.now() + 3 * 3600 * 1000;
+          state.retryAt = null; state.consecutiveFailures = 0; state.paused = false;
+          state.slotsUsedToday = []; state.pendingIndex = null;
+        },
+      }));
     assert.equal(calls, 1, '旧的 nextTime 不该挡住节点模式的发布');
   } finally {
     rmSync(videoDir, { recursive: true, force: true });
@@ -139,24 +184,21 @@ test('状态里留着旧的随机间隔时，节点模式照样能发', async ()
 test('时段模式下，随机间隔照旧生效', async () => {
   const videoDir = mkdtempSync(path.join(tmpdir(), 'slot-regression2-'));
   writeFileSync(path.join(videoDir, '123456.mp4'), 'fake');
-  const account = { name: ACCOUNT, browser: 'fake', browserId: 'x1', videoFolder: videoDir };
+  const account = { name: ACCOUNT, browser: 'fake', browserId: 'x1', videoFolder: videoDir, timezone: TZ };
+  const settings = {
+    minIntervalMs: 1, maxIntervalMs: 2, folderScanIntervalMs: 1000, videoExtensions: ['.mp4'],
+    hashtagKeywords: ['fyp'], dailyPublishLimit: 4, timezone: TZ,
+    postingSlots: { enabled: false }, postingWindow: { enabled: false },
+    retryBackoffMs: [1000], notifications: { enabled: false },
+  };
   try {
-    const settings = {
-      minIntervalMs: 1, maxIntervalMs: 2, folderScanIntervalMs: 1000, videoExtensions: ['.mp4'],
-      hashtagKeywords: ['fyp'], dailyPublishLimit: 4, timezone: 'Asia/Jakarta',
-      postingSlots: { enabled: false }, postingWindow: { enabled: false },
-      retryBackoffMs: [1000], notifications: { enabled: false },
-    };
-    let calls = 0;
-    const adapter = { async startProfile() { calls += 1; throw new Error('测试到此为止'); } };
-    await tick(settings, [account], new Map([['fake', adapter]]));
-    const state = JSON.parse(readFileSync(STATE_FILE, 'utf-8'));
-    state.nextTime = Date.now() + 3 * 3600 * 1000;
-    state.retryAt = null; state.consecutiveFailures = 0; state.paused = false; state.pendingIndex = null;
-    writeFileSync(STATE_FILE, JSON.stringify(state));
-
-    calls = 0;
-    await tick(settings, [account], new Map([['fake', adapter]]));
+    const calls = await withFrozenClock(frozenNowInsideSlot(ACCOUNT), () =>
+      runTickOnce(settings, account, {
+        prepare: (state) => {
+          state.nextTime = Date.now() + 3 * 3600 * 1000;
+          state.retryAt = null; state.consecutiveFailures = 0; state.paused = false; state.pendingIndex = null;
+        },
+      }));
     assert.equal(calls, 0, '时段模式下 nextTime 还是要拦住');
   } finally {
     rmSync(videoDir, { recursive: true, force: true });
