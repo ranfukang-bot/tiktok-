@@ -693,3 +693,12 @@ details > summary:focus-visible { outline: none; box-shadow: var(--ring); border
   .slot-dash { display: none; }
   .slot-row .slot-label { grid-column: 1 / -1; }
 }
+
+/* 品单 */
+#jl-table input, #jl-table select { width: 100%; }
+#jl-table .jl-id { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-variant-numeric: tabular-nums; }
+#jl-table .jl-del { padding: 4px 9px; line-height: 1; color: var(--muted); }
+#jl-table .jl-del:hover { color: var(--red); border-color: var(--red); }
+#jl-table th:last-child, #jl-table td:last-child { width: 1%; }
+.jl-actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+#jl-csv { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }

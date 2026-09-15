@@ -20,6 +20,7 @@ import { recentLogs, subscribe } from './logBus.js';
 import { createAdapter } from './browserAdapters/index.js';
 import { sendTestNotification } from './notifier.js';
 import { screenProducts, loadVerdicts, saveVerdict } from './productScreen.js';
+import { loadJoblist, saveJoblist, importFromCsv, mergeJoblist } from './joblist.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8765;
@@ -223,6 +224,38 @@ app.post('/api/pick-folder', (req, res) => {
     const selected = stdout.trim();
     res.json({ path: selected || null });
   });
+});
+
+// ===== 品单 =====
+// 一个品一行，商品ID当主键。收件箱靠它决定视频该送进哪个账号的文件夹。
+app.get('/api/joblist', (req, res) => {
+  try {
+    res.json(loadJoblist());
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+app.put('/api/joblist', (req, res) => {
+  try {
+    res.json(saveJoblist(req.body));
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+// 把选品插件导出的 CSV 直接粘进来。已经存在的商品ID保留原有的账号设置，
+// 不会因为重新导一次表就把你指好的账号清掉。
+app.post('/api/joblist/import', (req, res) => {
+  try {
+    const { csvText, defaultAccount } = req.body || {};
+    if (!csvText || !String(csvText).trim()) throw new Error('没有收到内容');
+    const { items, skipped } = importFromCsv(csvText, { defaultAccount: defaultAccount || '' });
+    const merged = mergeJoblist(loadJoblist(), items);
+    res.json({ items: saveJoblist(merged.items), added: merged.added, kept: merged.kept, skipped });
+  } catch (err) {
+    handleError(res, err);
+  }
 });
 
 // ===== 选品粗筛 =====

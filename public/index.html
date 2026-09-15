@@ -79,6 +79,43 @@
 
       <div id="p-result"></div>
     </details>
+
+    <details id="joblist-details">
+      <summary>品单（商品ID → 发布账号）</summary>
+      <div class="hint" style="margin-bottom:14px;">
+          一个品一行，<b>商品ID是主键</b>——就是 FastMoss 详情页地址末尾那串数字。
+        收件箱靠这张表决定视频该送进哪个账号的文件夹；发布时也是靠它精确挂车。
+      </div>
+
+      <div class="group">
+        <h3>从选品插件导入</h3>
+        <div class="form-grid">
+          <div class="field span2">
+            <label for="jl-csv">把导出的 CSV 全文粘进来</label>
+            <textarea id="jl-csv" rows="3" placeholder="用记事本打开选品插件导出的 CSV，全选复制，粘在这里"></textarea>
+          </div>
+          <div class="field">
+            <label for="jl-default-account">新商品默认归哪个账号</label>
+            <select id="jl-default-account"></select>
+            <div class="hint">
+              <b>已经在品单里的商品保留原来指定的账号</b>，重新导表不会把你指好的清掉。
+              需要选品插件 0.12.0 以上版本（带"商品ID"列）。
+            </div>
+          </div>
+          <div class="field">
+            <label>&nbsp;</label>
+            <button type="button" id="jl-import">导入</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="jl-msg" class="hint"></div>
+      <table class="ptable" id="jl-table"></table>
+      <div class="jl-actions">
+        <button type="button" id="jl-add" class="ghost">+ 手动加一行</button>
+        <button type="button" id="jl-save">保存品单</button>
+      </div>
+    </details>
   </section>
 
   <section class="card">
@@ -148,6 +185,21 @@
             <div class="field" id="window-end-field">
               <label>几点结束（24=到午夜）</label>
               <input type="number" min="1" max="24" step="1" id="s-window-end">
+            </div>
+          </div>
+        </div>
+
+        <div class="group">
+          <h3>收件箱（视频自动归档）</h3>
+          <div class="form-grid">
+            <div class="field span2">
+              <label for="s-inbox">收件箱文件夹</label>
+              <input type="text" id="s-inbox" placeholder="一般填浏览器的下载目录，例如 C:\Users\Administrator\Downloads">
+              <div class="hint">
+                填了之后，只要把文件名是 <b>商品ID.mp4</b> 的视频丢进这个文件夹，就会自动送进品单里指定的那个账号文件夹，
+                不用再一条条挑夹子。认不出来的文件原样不动，同名文件不覆盖，刚下载完的先等 15 秒再搬。<br>
+                留空就是关掉这个功能。
+              </div>
             </div>
           </div>
         </div>

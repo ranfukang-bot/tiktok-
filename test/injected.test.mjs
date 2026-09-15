@@ -680,6 +680,71 @@ test('真实控制台JS：发布时间节点能改能存，配错了当场拦住
   assert.equal(saved.postingWindow.enabled, true, '关掉节点就该由时段接管，不能两个都关掉变成随时发');
 });
 
+test('真实控制台JS：品单能导入、能改账号、能存（模拟API，不写用户数据）', async () => {
+  const example = JSON.parse(readFileSync(new URL('../config/settings.example.json', import.meta.url), 'utf8'));
+  let jobs = [{ productId: '1737318339699312031', name: '旧名', account: '印尼1号', note: '爆过', addedAt: 1 }];
+  let savedJobs = null;
+  let importPayload = null;
+  await page.route('http://joblist.test/**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/' || path === '/app.js' || path === '/style.css') {
+      const file = path === '/' ? 'index.html' : path.slice(1);
+      const body = readFileSync(new URL('../public/' + file, import.meta.url), 'utf8');
+      return route.fulfill({ body, contentType: path === '/' ? 'text/html' : path.endsWith('.js') ? 'text/javascript' : 'text/css' });
+    }
+    if (path === '/api/logs/stream') return route.fulfill({ body: '', contentType: 'text/event-stream' });
+    let value = {};
+    if (path === '/api/settings') value = example;
+    if (path === '/api/accounts') value = [
+      { name: '印尼1号', browser: 'bitbrowser', browserId: 'b1', videoFolder: 'C:/a' },
+      { name: '印尼2号', browser: 'bitbrowser', browserId: 'b2', videoFolder: 'C:/b' },
+    ];
+    if (path === '/api/status') value = { running: false, accounts: [] };
+    if (path === '/api/bitbrowser/profiles') value = [];
+    if (path === '/api/joblist') {
+      if (route.request().method() === 'PUT') { savedJobs = route.request().postDataJSON(); value = savedJobs; }
+      else value = jobs;
+    }
+    if (path === '/api/joblist/import') {
+      importPayload = route.request().postDataJSON();
+      jobs = [...jobs, { productId: '1735360337668113923', name: 'TAHU BULAT', account: '印尼2号', note: '' }];
+      value = { items: jobs, added: 1, kept: 1, skipped: ['某个没读到ID的商品'] };
+    }
+    return route.fulfill({ json: value });
+  });
+  await page.goto('http://joblist.test/');
+  await page.evaluate(() => { document.getElementById('joblist-details').open = true; });
+  await page.waitForFunction(() => document.querySelectorAll('#jl-table tbody tr[data-idx]').length === 1);
+
+  // 已有的行要回填出来，账号下拉要选中当前账号
+  assert.equal(await page.locator('#jl-table .jl-id').first().inputValue(), '1737318339699312031');
+  assert.equal(await page.locator('#jl-table .jl-account').first().inputValue(), '印尼1号');
+
+  // 导入：默认账号要一起带上去
+  await page.locator('#jl-csv').fill('"商品ID","商品"\r\n"1735360337668113923","TAHU BULAT"\r\n');
+  await page.locator('#jl-default-account').selectOption('印尼2号');
+  await page.locator('#jl-import').click();
+  await page.waitForFunction(() => document.querySelectorAll('#jl-table tbody tr[data-idx]').length === 2);
+  assert.equal(importPayload.defaultAccount, '印尼2号');
+  assert.match(await page.locator('#jl-msg').innerText(), /新增 1 个/);
+  assert.match(await page.locator('#jl-msg').innerText(), /没读到ID/, '插件没读到ID的商品要说出来，不能让人以为导全了');
+
+  // 改账号再保存
+  await page.locator('#jl-table tbody tr').first().locator('.jl-account').selectOption('印尼2号');
+  await page.locator('#jl-save').click();
+  await page.waitForFunction(() => document.querySelector('#jl-msg').innerText.includes('已保存'));
+  assert.equal(savedJobs.length, 2);
+  assert.equal(savedJobs[0].account, '印尼2号');
+  assert.equal(savedJobs[0].note, '爆过', '备注不能在往返里掉');
+
+  // 商品ID填错要当场拦住，不能存进去
+  savedJobs = null;
+  await page.locator('#jl-table .jl-id').first().fill('不是数字');
+  await page.locator('#jl-save').click();
+  await page.waitForFunction(() => document.querySelector('#jl-msg').innerText.includes('商品ID'));
+  assert.equal(savedJobs, null, '填错的时候不该发出保存请求');
+});
+
 test('控制台移除了15项翻译表单且保留旧配置', () => {
   const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
   const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');

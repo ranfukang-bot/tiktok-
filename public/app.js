@@ -364,6 +364,7 @@ document.getElementById('a-delete-btn').addEventListener('click', async () => {
     accountsConfig = next;
     closeAccountModal();
     renderAccounts();
+    renderJoblist(); // 账号改名/新增之后，品单里的账号下拉要跟着更新
   } catch (err) {
     const el = document.getElementById('account-form-error');
     el.textContent = err.message;
@@ -558,6 +559,115 @@ function updateScheduleMode() {
   }
 }
 
+// ===================== 品单 =====================
+// 一个品一行，商品ID当主键。收件箱靠它决定视频送进哪个账号的文件夹。
+let joblist = [];
+
+function jlMsg(text, kind) {
+  const el = document.getElementById('jl-msg');
+  el.innerHTML = text ? `<b style="color:var(--${kind || 'muted'})">${escapeHtml(text)}</b>` : '';
+}
+
+function accountOptions(selected) {
+  const names = accountsConfig.map((a) => a.name);
+  if (selected && !names.includes(selected)) names.unshift(selected); // 账号被改名/删掉了也要显示出来，不能静默丢掉
+  return ['<option value="">（未指定）</option>']
+    .concat(names.map((n) => `<option value="${escapeAttr(n)}"${n === selected ? ' selected' : ''}>${escapeHtml(n)}</option>`))
+    .join('');
+}
+
+function renderJoblist() {
+  const table = document.getElementById('jl-table');
+  if (!table) return;
+  const picker = document.getElementById('jl-default-account');
+  if (picker) picker.innerHTML = accountOptions(picker.value);
+
+  if (!joblist.length) {
+    table.innerHTML = '<tbody><tr><td class="muted">品单还是空的。上面粘一份选品插件的导出表，或者点下面手动加一行。</td></tr></tbody>';
+    return;
+  }
+  table.innerHTML =
+    '<thead><tr><th>商品ID</th><th>商品名</th><th>发布账号</th><th>备注</th><th></th></tr></thead><tbody>' +
+    joblist.map((item, i) => `
+      <tr data-idx="${i}">
+        <td><input class="jl-id mono" value="${escapeAttr(item.productId)}" inputmode="numeric" placeholder="详情页地址末尾那串数字"></td>
+        <td><input class="jl-name" value="${escapeAttr(item.name || '')}" placeholder="（可留空）"></td>
+        <td><select class="jl-account">${accountOptions(item.account)}</select></td>
+        <td><input class="jl-note" value="${escapeAttr(item.note || '')}" placeholder="爆了 / 换脚本…"></td>
+        <td><button type="button" class="ghost jl-del" title="删掉这一行">✕</button></td>
+      </tr>`).join('') +
+    '</tbody>';
+}
+
+function readJoblistFromForm() {
+  return [...document.querySelectorAll('#jl-table tbody tr[data-idx]')].map((tr) => ({
+    productId: tr.querySelector('.jl-id').value.trim(),
+    name: tr.querySelector('.jl-name').value.trim(),
+    account: tr.querySelector('.jl-account').value,
+    note: tr.querySelector('.jl-note').value.trim(),
+    addedAt: joblist[Number(tr.dataset.idx)]?.addedAt,
+  }));
+}
+
+async function loadJoblist() {
+  try {
+    joblist = await api('GET', '/api/joblist');
+    renderJoblist();
+  } catch (err) {
+    jlMsg('读取品单失败：' + err.message, 'red');
+  }
+}
+
+document.getElementById('jl-table')?.addEventListener('click', (e) => {
+  if (!e.target.closest('.jl-del')) return;
+  joblist = readJoblistFromForm();
+  joblist.splice(Number(e.target.closest('tr').dataset.idx), 1);
+  renderJoblist();
+});
+
+document.getElementById('jl-add')?.addEventListener('click', () => {
+  joblist = [...readJoblistFromForm(), { productId: '', name: '', account: '', note: '' }];
+  renderJoblist();
+  document.querySelector('#jl-table tbody tr:last-child .jl-id')?.focus();
+});
+
+document.getElementById('jl-save')?.addEventListener('click', async () => {
+  const rows = readJoblistFromForm();
+  // 空行直接丢掉，不用报错烦人——手动加了一行又不填是很正常的
+  const items = rows.filter((r) => r.productId || r.name || r.note);
+  const bad = items.find((r) => !/^\d{6,25}$/.test(r.productId));
+  if (bad) {
+    jlMsg(`这一行的商品ID不对：${bad.productId || '(空)'}${bad.name ? '（' + bad.name + '）' : ''}。商品ID是 FastMoss 详情页地址末尾那串纯数字`, 'red');
+    return;
+  }
+  try {
+    joblist = await api('PUT', '/api/joblist', items);
+    renderJoblist();
+    jlMsg(`已保存，共 ${joblist.length} 个品`, 'green');
+  } catch (err) {
+    jlMsg('保存失败：' + err.message, 'red');
+  }
+});
+
+document.getElementById('jl-import')?.addEventListener('click', async () => {
+  const csvText = document.getElementById('jl-csv').value;
+  if (!csvText.trim()) { jlMsg('先把导出的表粘进上面那个框', 'amber'); return; }
+  try {
+    const r = await api('POST', '/api/joblist/import', {
+      csvText,
+      defaultAccount: document.getElementById('jl-default-account').value,
+    });
+    joblist = r.items;
+    renderJoblist();
+    document.getElementById('jl-csv').value = '';
+    let text = `导入完成：新增 ${r.added} 个，已有的 ${r.kept} 个保留了原来指定的账号`;
+    if (r.skipped?.length) text += `；有 ${r.skipped.length} 个商品插件没读到ID，跳过了（${r.skipped.slice(0, 3).join('、')}${r.skipped.length > 3 ? '…' : ''}）`;
+    jlMsg(text, 'green');
+  } catch (err) {
+    jlMsg('导入失败：' + err.message, 'red');
+  }
+});
+
 function fillSettingsForm(settings) {
   document.getElementById('s-min-hours').value = (settings.minIntervalMs / 3600000).toFixed(2);
   document.getElementById('s-max-hours').value = (settings.maxIntervalMs / 3600000).toFixed(2);
@@ -567,6 +677,7 @@ function fillSettingsForm(settings) {
   document.getElementById('s-close-profile').checked = settings.closeProfileAfterCycle !== false;
   document.getElementById('s-daily-limit').value = settings.dailyPublishLimit ?? 0;
   document.getElementById('s-timezone').value = settings.timezone || 'Asia/Jakarta';
+  document.getElementById('s-inbox').value = settings.inboxFolder || '';
 
   const window = settings.postingWindow || {};
   document.getElementById('s-window-start').value = window.startHour ?? 12;
@@ -620,6 +731,7 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
   settings.closeProfileAfterCycle = document.getElementById('s-close-profile').checked;
   settings.dailyPublishLimit = Number(document.getElementById('s-daily-limit').value) || 0;
   settings.timezone = document.getElementById('s-timezone').value;
+  settings.inboxFolder = document.getElementById('s-inbox').value.trim();
   const useSlots = document.getElementById('s-slots-enabled').checked;
   const slots = readSlotsFromForm().sort((a, b) => hmToMin(a.start) - hmToMin(b.start));
   if (useSlots) {
@@ -791,6 +903,7 @@ async function init() {
     showGlobalError('读取账号列表失败: ' + err.message);
   }
   await refreshStatus();
+  await loadJoblist();
   initLogs();
   setInterval(refreshStatus, 3000);
 }

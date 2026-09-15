@@ -15,6 +15,8 @@ import { scanDirectory, syncFilesIntoQueue, deletePublishedFile } from './folder
 import { runOneUploadCycle } from './browser/tiktokStudio.js';
 import { classifyError, retryDelayMs, maxRetries } from './errorPolicy.js';
 import { notify } from './notifier.js';
+import { routeInbox } from './inbox.js';
+import { loadJoblist } from './joblist.js';
 import {
   rolloverIfNewDay,
   hasQuotaRemaining,
@@ -360,8 +362,28 @@ function buildAdapters(settings, accounts) {
   return adapters;
 }
 
+// 收件箱归档。放在所有账号动作【之前】跑：刚归位的视频这一轮就能被扫进队列，
+// 不用白等一圈。失败只打日志不往上抛——收件箱路径填错不该让整个调度停摆，
+// 那样连发布都不走了，代价远大于"这一轮没归档"。
+async function runInbox(settings, accounts) {
+  if (!String(settings.inboxFolder || '').trim()) return;
+  const log = createLogger('收件箱');
+  try {
+    const result = await routeInbox(settings, accounts, loadJoblist());
+    for (const item of result.moved) {
+      log.info(`${item.filename} → ${item.account}（商品 ${item.productId}）`);
+    }
+    for (const item of result.skipped) {
+      log.warn(`${item.filename} 留在收件箱：${item.reason}`);
+    }
+  } catch (err) {
+    log.warn(`收件箱这一轮没跑成(不影响发布)：${err.message}`);
+  }
+}
+
 // 账号分组后组内并发跑，组间顺序跑，避免同一时刻启动过多指纹浏览器窗口。
 export async function tickAll(settings, accounts) {
+  await runInbox(settings, accounts);
   const adapters = buildAdapters(settings, accounts);
   const concurrency = settings.concurrency || 1;
   for (let i = 0; i < accounts.length; i += concurrency) {

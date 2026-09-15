@@ -22,6 +22,8 @@
   "_quota说明": "每个账号每天最多发几条，按 timezone 指定的时区算一天的边界，超过就停下等第二天当地0点自动刷新额度。dailyPublishLimit 填0表示不限制。timezone 支持任意 IANA 时区（网页上有完整下拉可选），做哪个地区就填哪个地区的时区。",
   "dailyPublishLimit": 4,
   "timezone": "Asia/Jakarta",
+  "_inboxFolder说明": "收件箱：填一个文件夹路径(一般就是浏览器的下载目录)，把文件名为 <商品ID>.mp4 的视频丢进去，程序会按品单(state/joblist.json)里指定的账号自动送进对应账号的视频文件夹。认不出来的文件原样不动，目标文件夹有同名文件时不覆盖，刚写完不到15秒的文件先不碰(可能还在下载)。留空就是关掉这个功能。商品ID就是 FastMoss 详情页地址末尾那串数字。",
+  "inboxFolder": "",
   "_postingSlots说明": "固定发布时间节点(推荐，默认开启)。一天几个流量波峰档口，每个档口当天最多发一条，实际发布时刻在 start-end 这个区间里随机取。【过点就不发】：视频做晚了就当天少发几条，不会在晚上把额度硬塞完。节点之间不能重叠。enabled 设为 false 就回到下面 postingWindow 那套「时段内随时发」。时间都按 timezone 指定的当地时间算。",
   "postingSlots": {
     "enabled": true,
