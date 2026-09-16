@@ -139,7 +139,7 @@ async function ensureOnUploadPage(page, log) {
 // 返回 { published: true } | { published: false, uncertain: true }
 // beforePublishClick: 点击发布前调用（把 pendingIndex 落盘），防止点击后页面跳转、
 // Node进程如果这时候崩了也能在重启后知道"上一条点了发布但结果没确认"，需要人工核实。
-export async function runOneUploadCycle({ page, account, item, config, log, beforePublishClick }) {
+export async function runOneUploadCycle({ page, account, item, config, log, beforeUpload, beforePublishClick }) {
   installAndBridgeLogs(page, log);
   await ensureOnUploadPage(page, log);
   await page.evaluate(installTkqInPage, config);
@@ -149,6 +149,8 @@ export async function runOneUploadCycle({ page, account, item, config, log, befo
 
   const fileInput = page.locator('input[type="file"][accept="video/*"]').first();
   await fileInput.waitFor({ state: 'attached', timeout: 30000 });
+  // 时间节点限制的是开始上传，不是完成时间；放行后仍必须经过后面的全部安全检查。
+  if (beforeUpload) await beforeUpload();
   await fileInput.setInputFiles(absolutePath);
 
   await humanDelay(1500, 3000);

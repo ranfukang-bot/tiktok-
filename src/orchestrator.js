@@ -23,7 +23,7 @@ import {
   isWithinPostingWindow,
   currentDayKey,
   evaluateSlots,
-  assertSlotStillOpen,
+  assertSlotCanStartUpload,
   recordConfirmedQuota,
 } from './dailyQuota.js';
 
@@ -137,12 +137,15 @@ async function processAccountOnce(account, settings, adapter, log, slot = null) 
         item,
         config,
         log,
+        beforeUpload: () => {
+          // 开浏览器、等页面可能耗时，必须在真正提交视频文件前再检查准入。
+          assertSlotCanStartUpload(slot, Date.now());
+        },
         beforePublishClick: async () => {
-          // 进流程时没过点，不代表现在没过点：上传+检查可能花掉十几二十分钟。
-          // 这个检查必须在 publishAttempted 置true【之前】，否则一旦在这里中断，
-          // 错误会被分类成"可能已经点过发布"，账号会被暂停等人确认——可我们
-          // 恰恰是还没点。
-          assertSlotStillOpen(slot, Date.now());
+          // 节点只限制开始上传。已开始的这一条通过全部安全检查后，允许跨点完成。
+          if (slot && Date.now() >= slot.endMs) {
+            log.info(`已在 ${slot.start}-${slot.end} 节点内开始上传，虽然已过截止时间，仍完成本条发布（安全检查已通过）`);
+          }
           publishAttempted = true;
           const s = getState(account.name);
           s.pendingIndex = nextIdx;
@@ -258,7 +261,7 @@ async function tickAccount(settings, account, adapters) {
 
     // 到点了没？两种模式都是"没到就安安静静跳过"，不暂停不通知。
     //
-    // 时间节点模式(默认)：一天几个固定波峰档口，每个档口最多一条，【错过不补发】。
+    // 时间节点模式(默认)：每个档口最多一条。过点不新开，已经开始上传的允许完成。
     // 视频做晚了就少发几条，绝不在晚上把当天额度硬塞完——五个半小时连发四条是
     // 被判"营销灌水"的典型特征，而且前一条还没在初始流量池里跑完就被下一条截断。
     //
@@ -298,7 +301,7 @@ async function tickAccount(settings, account, adapters) {
       processingAccounts.delete(account.name);
     }
   } catch (err) {
-    // 过点放弃不是故障：不计失败、不暂停、不通知，视频留在队列里等下一个节点
+    // 开浏览器/等页面时过点、尚未上传：不计失败，留到下一节点；已上传的不走此分支。
     if (err.slotExpired) {
       log.info(err.message);
       return;

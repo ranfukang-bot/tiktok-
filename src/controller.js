@@ -109,7 +109,7 @@ export function getStatus() {
   } catch (err) {
     settingsError = err.message;
   }
-  return { running, lastTickAt, lastTickError, settingsError, accounts };
+  return { running, lastTickAt, lastTickError, settingsError, accounts, slotCompletionPolicy: 'finish-started-upload' };
 }
 
 export async function resolveUncertain(accountName, decision) {

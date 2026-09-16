@@ -20,8 +20,6 @@ export function currentDayKey(timezone, nowMs = Date.now()) {
 export function recordConfirmedQuota(state, timezone, nowMs = Date.now()) {
   const dayKey = currentDayKey(timezone, nowMs);
   const since = state.pendingSince;
-  // 极老记录连发布时刻和节点日期都没有时，退回 dayKey —— 也就是保守地占今天
-  // 一条额度。宁可少发一条，也不要因为记不上账而突破每日上限。
   const publishedDay = Number.isFinite(since) && since > 0
     ? currentDayKey(timezone, since)
     : state.pendingSlot?.dayKey || dayKey;
@@ -30,6 +28,7 @@ export function recordConfirmedQuota(state, timezone, nowMs = Date.now()) {
     state.publishedToday = 0;
     state.slotsUsedToday = [];
   }
+  // 极老记录连日期也没有时，保守地占今天一条额度，避免突破上限。
   if (publishedDay !== dayKey) return false;
   state.publishedToday = (state.publishedToday || 0) + 1;
   return true;
@@ -149,8 +148,7 @@ function hash32(text) {
 }
 
 // 把今天的每个节点换算成具体时刻。节点在配置里是"11:30-12:30"这种当地时间，
-// 实际发布时刻是这个区间里的一个随机点——不卡整点(整点是竞品和各种定时脚本
-// 集中释放的时间)，而且不同账号的随机点不一样，同一部手机上的号不会一起发。
+// 开始上传的目标时刻是区间里的一个稳定随机点；不同账号可能撞在同一分钟。
 export function slotTargetsForDay({ dayKey, timezone, slots, accountName }) {
   const [y, mo, d] = dayKey.split('-').map(Number);
   return slots.map((slot) => {
@@ -204,16 +202,16 @@ export function evaluateSlots({ nowMs, timezone, dayKey, slots, accountName, use
   return { due, nextAt, remainingSlots: upcoming.length, targets };
 }
 
-// 真正点"发布"之前的最后一道闸：进流程时没过点，不代表现在没过点——
-// 上传+双绿检查可能花掉十几二十分钟。
+// 真正提交视频文件前的准入检查：开浏览器/等页面时过点，就不要再新开上传。
+// 一旦已开始上传，本轮允许跨截止时间完成，仍受安全检查和原有超时限制。
 //
 // err.slotExpired 这个标记是有分量的：调用方靠它把这种情况当作"安静跳过"，
 // 而不是故障。要是漏了这个标记，过点放弃会被算成一次失败，攒够次数账号就被
 // 暂停并推送通知了。
-export function assertSlotStillOpen(slot, nowMs) {
+export function assertSlotCanStartUpload(slot, nowMs) {
   if (!slot || nowMs < slot.endMs) return;
   const err = new Error(
-    `上传完成时已经过了 ${slot.start}-${slot.end} 这个时间节点，按"过点不发"的规则放弃这一条，` +
+    `开始上传前已经过了 ${slot.start}-${slot.end} 这个时间节点，本次不再新开上传，` +
       '视频留在队列里等下一个节点'
   );
   err.slotExpired = true;

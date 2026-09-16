@@ -83,6 +83,19 @@ test('真实确认路径：旧记录用 pendingSince 补记同日节点和额度
   assert.deepEqual(state.slotsUsedToday, ['11:30']);
 });
 
+test('原节点的上传拖进下个节点：仍只记原节点，不误占下个节点', async () => {
+  const state = await confirm({ overrides: { pendingSince: evening } });
+  assert.equal(state.publishedToday, 2);
+  assert.deepEqual(state.slotsUsedToday, ['11:30']);
+});
+
+test('昨天开始上传，今天才点击发布：计今天额度，但不占今天同名节点', async () => {
+  const state = await confirm({ at: midnight + 1000, overrides: { pendingSince: midnight } });
+  assert.equal(state.publishDayKey, '2026-01-16');
+  assert.equal(state.publishedToday, 1);
+  assert.deepEqual(state.slotsUsedToday, []);
+});
+
 test('真实确认路径：旧记录跨天也不扣新一天额度', async () => {
   const state = await confirm({ at: midnight, overrides: { pendingSlot: null } });
   assert.equal(state.publishedToday, 0);

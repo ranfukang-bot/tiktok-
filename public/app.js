@@ -522,7 +522,7 @@ function updateSlotsSummary() {
   }
   const limit = Number(document.getElementById('s-daily-limit').value) || 0;
   const sorted = [...slots].sort((a, b) => hmToMin(a.start) - hmToMin(b.start));
-  let note = `按这些节点，每天最多发 <b>${sorted.length}</b> 条`;
+  let note = `节点内开始上传，过点后允许本条通过安全检查再完成；过点不新开上传。<br>按这些节点，每天最多发 <b>${sorted.length}</b> 条`;
   if (limit && limit < sorted.length) note += `；但每日额度是 ${limit} 条，所以实际最多 <b>${limit}</b> 条（发满就停，剩下的节点空着）`;
   if (limit && limit > sorted.length) note += `；每日额度设的是 ${limit} 条，比节点还多，多出来的发不掉——要么加节点，要么把额度改成 ${sorted.length}`;
   if (usingDefaultSlots) {

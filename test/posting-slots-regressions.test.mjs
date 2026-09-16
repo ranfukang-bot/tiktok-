@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
-  assertSlotStillOpen,
+  assertSlotCanStartUpload,
   creditedSlotOnConfirm,
   currentDayKey,
   slotTargetsForDay,
@@ -15,18 +15,16 @@ import {
 import { resolveTimezone } from '../src/config.js';
 import { tick } from '../src/orchestrator.js';
 
-// ===== 1. 上传跨过截止时间 =====
-// 12:29 开始上传，上传和双绿检查花了几分钟，12:32 才轮到点"发布"。
-// 进流程时没过点，不代表现在没过点。
-test('上传跨过节点截止时间：点发布之前要拦住', () => {
+// ===== 1. 截止时间只限制开始上传（新规则） =====
+test('开始上传前过点要拦住，节点内允许开始', () => {
   const slot = { key: '11:30', start: '11:30', end: '12:30', endMs: Date.UTC(2026, 8, 12, 5, 30) };
   // 还在窗口里：放行
-  assert.doesNotThrow(() => assertSlotStillOpen(slot, slot.endMs - 1));
+  assert.doesNotThrow(() => assertSlotCanStartUpload(slot, slot.endMs - 1));
   // 过点了：拦住
-  assert.throws(() => assertSlotStillOpen(slot, slot.endMs), /11:30-12:30/);
-  assert.throws(() => assertSlotStillOpen(slot, slot.endMs + 60000), /过点不发/);
+  assert.throws(() => assertSlotCanStartUpload(slot, slot.endMs), /11:30-12:30/);
+  assert.throws(() => assertSlotCanStartUpload(slot, slot.endMs + 60000), /不再新开上传/);
   // 时段模式下没有节点，永远放行
-  assert.doesNotThrow(() => assertSlotStillOpen(null, Date.now()));
+  assert.doesNotThrow(() => assertSlotCanStartUpload(null, Date.now()));
 });
 
 test('过点放弃必须带 slotExpired 标记，否则会被当成故障暂停账号', () => {
@@ -34,21 +32,20 @@ test('过点放弃必须带 slotExpired 标记，否则会被当成故障暂停�
   // 暂停并推送通知——可这根本不是故障，只是时间到了不发而已。
   const slot = { key: '11:30', start: '11:30', end: '12:30', endMs: 1000 };
   try {
-    assertSlotStillOpen(slot, 2000);
+    assertSlotCanStartUpload(slot, 2000);
     assert.fail('应该抛错');
   } catch (err) {
     assert.equal(err.slotExpired, true);
   }
 });
 
-test('过点检查必须排在"已尝试发布"之前', () => {
-  // 顺序反了的话，在这里中断会被分类成"可能已经点过发布按钮"，账号会被暂停
-  // 等人确认——可我们恰恰是还没点。这条只能靠读源码盯住。
+test('节点检查只在 beforeUpload，发布前仍持久化原节点', () => {
   const src = readFileSync(new URL('../src/orchestrator.js', import.meta.url), 'utf8');
-  const guard = src.indexOf('assertSlotStillOpen(slot, Date.now())');
-  const attempted = src.indexOf('publishAttempted = true', guard);
-  assert.ok(guard > 0, '找不到过点检查');
-  assert.ok(attempted > guard, '过点检查必须在 publishAttempted 置true之前');
+  const start = src.indexOf('beforeUpload:');
+  const publish = src.indexOf('beforePublishClick:', start);
+  assert.match(src.slice(start, publish), /assertSlotCanStartUpload\(slot, Date.now\(\)\)/);
+  assert.doesNotMatch(src.slice(publish), /assertSlotCanStartUpload\(/);
+  assert.match(src.slice(publish), /s\.pendingSlot = slot/);
 });
 
 // 人工确认额度由 confirm-publication.test.mjs 用隔离配置调用真实 controller 验证，
