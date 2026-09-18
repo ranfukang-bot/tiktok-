@@ -1,12 +1,13 @@
 import { loadSettings, loadAccounts, loadAllAccounts, resolveDailyLimit, resolveTimezone, resolvePostingPlan } from './config.js';
 import { tickAll, isAccountProcessing, syncAccountFolder } from './orchestrator.js';
-import { getState, setState } from './stateStore.js';
+import { getState, setState, resume } from './stateStore.js';
 import { createLogger } from './logger.js';
 import { deletePublishedFile } from './folderScanner.js';
 import { currentDayKey, isWithinPostingWindow, nextPostingWindowStartMs, evaluateSlots, creditedSlotOnConfirm, slotTargetsForDay, recordConfirmedQuota } from './dailyQuota.js';
 
 let running = false;
 let loopPromise = null;
+let runGeneration = 0;
 let lastTickError = null;
 let lastTickAt = null;
 
@@ -16,29 +17,41 @@ function sleep(ms) {
 
 async function loop() {
   while (running) {
+    let intervalMs = 30000;
     try {
       const settings = loadSettings();
+      intervalMs = settings.folderScanIntervalMs || intervalMs;
       const accounts = loadAccounts();
-      await tickAll(settings, accounts);
+      const generation = runGeneration;
+      await tickAll(settings, accounts, { shouldContinue: () => running && runGeneration === generation });
       lastTickError = null;
     } catch (err) {
       lastTickError = err.message;
       console.error('调度循环出错:', err);
     }
     lastTickAt = Date.now();
-    const settings = loadSettings();
-    await sleep(settings.folderScanIntervalMs || 30000);
+    if (running) await sleep(intervalMs);
   }
+}
+
+function ensureLoop() {
+  // 停止不会强杀正在发布的任务。再次启动时复用尚未退出的循环，绝不并排再开一个。
+  if (loopPromise) return;
+  loopPromise = loop().finally(() => {
+    loopPromise = null;
+    if (running) ensureLoop();
+  });
 }
 
 export function start() {
   if (running) return;
   running = true;
-  loopPromise = loop();
+  ensureLoop();
 }
 
 export function stop() {
   running = false;
+  runGeneration += 1; // 当前批次可收尾，但旧一轮不能继续启动后面的账号。
 }
 
 export function isRunning() {
@@ -109,7 +122,7 @@ export function getStatus() {
   } catch (err) {
     settingsError = err.message;
   }
-  return { running, lastTickAt, lastTickError, settingsError, accounts, slotCompletionPolicy: 'finish-started-upload' };
+  return { running, lastTickAt, lastTickError, settingsError, accounts, slotCompletionPolicy: 'finish-started-upload', schedulerPolicy: 'single-flight-v1' };
 }
 
 export async function resolveUncertain(accountName, decision) {
@@ -171,6 +184,9 @@ export async function resolveUncertain(accountName, decision) {
 export async function scanAccountNow(accountName) {
   const account = loadAllAccounts().find((a) => a.name === accountName);
   if (!account) throw new Error(`没找到账号 "${accountName}"`);
+  if (isAccountProcessing(accountName)) {
+    return { deferred: true, message: '该账号正在处理，本轮结束后自动同步文件夹' };
+  }
   const settings = loadSettings();
   const log = createLogger(accountName);
   return syncAccountFolder(account, settings, log);
@@ -180,8 +196,11 @@ export function setAccountPaused(accountName, paused) {
   const state = getState(accountName);
   state.paused = paused;
   if (!paused) {
-    state.pauseReason = '';
-    state.pauseCode = '';
+    if (state.pauseCode === 'uncertain_publish' || Number.isInteger(state.pendingIndex)) {
+      throw new Error('请先确认上一条是否已发布，不能直接继续以免重复发布');
+    }
+    resume(accountName); // 用户重试是新一轮，不携带上一次已经耗尽的失败次数。
+    return;
   } else {
     state.pauseReason = state.pauseReason || '用户手动暂停';
     state.pauseCode = state.pauseCode || 'user';

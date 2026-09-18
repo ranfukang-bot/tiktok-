@@ -199,10 +199,15 @@ export async function runOneUploadCycle({ page, account, item, config, log, befo
   // 发布点击【之后】(publishAttempted 已为 true)，一旦抛错会被判成"发布结果不确定"，
   // 结果就是：视频其实发成功了，账号却被暂停并推送通知，源文件也不会被清理。
   // 提交 e58da98 记录过同类事故。
-  await page.evaluate(installTkqInPage, config);
-  const backOnUploadPage = await page.evaluate(() => window.__tkq.clickUploadEntranceAndWait());
-  if (!backOnUploadPage) {
-    log.warn('发布已确认，但点击左侧"上传"没能回到上传页，下一轮会用直接跳转的方式兜底');
+  try {
+    await page.evaluate(installTkqInPage, config);
+    const backOnUploadPage = await page.evaluate(() => window.__tkq.clickUploadEntranceAndWait());
+    if (!backOnUploadPage) {
+      log.warn('发布已确认，但点击左侧"上传"没能回到上传页，下一轮会用直接跳转的方式兜底');
+    }
+  } catch (err) {
+    // 成功证据已取得，辅助导航失败不能把成功降级为失败或发布不确定。
+    log.warn(`发布已确认，返回上传页失败（不影响发布结果）：${err.message}`);
   }
 
   return { published: true };

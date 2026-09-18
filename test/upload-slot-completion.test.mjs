@@ -5,7 +5,7 @@ import { installTkqInPage } from '../src/browser/injected.js';
 import { assertSlotCanStartUpload } from '../src/dailyQuota.js';
 
 // 运行真实 Node 上传编排，页面/时钟使用替身：不连 TikTok，不读取视频，不实际发布。
-async function cycle({ expiredBeforeUpload = false, unsafe = false, uncertain = false, uploadFails = false } = {}) {
+async function cycle({ expiredBeforeUpload = false, unsafe = false, uncertain = false, uploadFails = false, cleanupFails = false } = {}) {
   const events = [];
   const slot = { key: '19:30', start: '19:30', end: '20:30', endMs: 100000 };
   let now = expiredBeforeUpload ? slot.endMs : slot.endMs - 1;
@@ -28,6 +28,7 @@ async function cycle({ expiredBeforeUpload = false, unsafe = false, uncertain = 
       if (name === 'locateCaptionEditor') return { x: 1, y: 1, text: '' };
       if (name === 'waitForChecksPassAndAssertSafe' && unsafe) throw new Error('检查未通过');
       if (name === 'clickPublishButton') return { clicked: true };
+      if (name === 'clickUploadEntranceAndWait' && cleanupFails) throw new Error('Execution context was destroyed');
       return true;
     },
     async waitForURL() { if (uncertain) throw new Error('confirmation timeout'); },
@@ -80,4 +81,11 @@ test('上传失败不允许进入发布流程', async () => {
   assert.match(error.message, /upload failed/);
   assert.ok(!events.includes('pending'));
   assert.ok(!events.includes('clickPublishButton'));
+});
+
+test('确认发布成功后返回上传页失败，不得改判失败或重复发布', async () => {
+  const {result,error,events}=await cycle({cleanupFails:true});
+  assert.ifError(error);
+  assert.equal(result.published,true);
+  assert.equal(events.filter(x=>x==='clickPublishButton').length,1);
 });

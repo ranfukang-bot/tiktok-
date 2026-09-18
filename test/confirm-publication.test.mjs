@@ -139,3 +139,18 @@ test('自动确认共用的记账函数：午夜前点击、午夜后收到结�
   assert.equal(state.publishDayKey, '2026-01-16');
   assert.deepEqual(state.slotsUsedToday, []);
 });
+
+test('点击继续清零旧失败次数，但不重置成功记录和下一次时间', () => {
+  store.setState(ACCOUNT,{...store.getState(ACCOUNT),paused:true,pauseCode:'retry_exhausted',pauseReason:'旧失败',consecutiveFailures:3,retryAt:123,lastError:'旧错误',pendingIndex:null,doneIndex:0,publishedToday:1,nextTime:999});
+  controller.setAccountPaused(ACCOUNT,false);
+  const state=store.getState(ACCOUNT);
+  assert.equal(state.paused,false);assert.equal(state.consecutiveFailures,0);
+  assert.equal(state.lastError,'');assert.equal(state.retryAt,null);
+  assert.equal(state.doneIndex,0);assert.equal(state.publishedToday,1);assert.equal(state.nextTime,999);
+});
+
+test('发布结果不确定时，普通继续按钮不能绕过人工确认', () => {
+  store.setState(ACCOUNT,{...store.getState(ACCOUNT),paused:true,pauseCode:'uncertain_publish',pendingIndex:0});
+  assert.throws(()=>controller.setAccountPaused(ACCOUNT,false),/先确认/);
+  assert.equal(store.getState(ACCOUNT).paused,true);
+});

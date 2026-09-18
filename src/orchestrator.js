@@ -69,7 +69,6 @@ async function pauseAndNotify(account, settings, { reason, code, log, howToFix }
 // quiet: 没有任何变化时不打日志。调度循环每 30 秒扫一次，不加这个会一直刷
 // "扫描完成，文件夹和队列一致"；网页上手动点"扫描"时不传 quiet，照常给回音。
 export async function syncAccountFolder(account, settings, log, { quiet = false } = {}) {
-  const state = getState(account.name);
   let records;
   try {
     records = await scanDirectory(account.videoFolder, settings.videoExtensions);
@@ -79,6 +78,8 @@ export async function syncAccountFolder(account, settings, log, { quiet = false 
     }
     throw err;
   }
+  // 扫目录期间用户可能点暂停、发布流程可能更新 pending，不能拿旧快照覆盖新状态。
+  const state = getState(account.name);
   const result = syncFilesIntoQueue(state, records);
   setState(account.name, state);
   if (result.deferred) {
@@ -235,6 +236,9 @@ async function processAccountOnce(account, settings, adapter, log, slot = null) 
 }
 
 async function tickAccount(settings, account, adapters) {
+  // 必须在第一个 await（扫目录）之前占用，且覆盖错误分类、通知、收尾。
+  if (processingAccounts.has(account.name)) return;
+  processingAccounts.add(account.name);
   const log = createLogger(account.name);
   try {
     const state = getState(account.name);
@@ -294,12 +298,7 @@ async function tickAccount(settings, account, adapters) {
     if (plan.mode === 'window' && Date.now() < fresh.nextTime) return;
 
     const adapter = adapters.get(account.browser);
-    processingAccounts.add(account.name);
-    try {
-      await processAccountOnce(account, settings, adapter, log, slot);
-    } finally {
-      processingAccounts.delete(account.name);
-    }
+    await processAccountOnce(account, settings, adapter, log, slot);
   } catch (err) {
     // 开浏览器/等页面时过点、尚未上传：不计失败，留到下一节点；已上传的不走此分支。
     if (err.slotExpired) {
@@ -307,6 +306,8 @@ async function tickAccount(settings, account, adapters) {
       return;
     }
     await handleAccountError(account, settings, err, log);
+  } finally {
+    processingAccounts.delete(account.name);
   }
 }
 
@@ -385,11 +386,12 @@ async function runInbox(settings, accounts) {
 }
 
 // 账号分组后组内并发跑，组间顺序跑，避免同一时刻启动过多指纹浏览器窗口。
-export async function tickAll(settings, accounts) {
+export async function tickAll(settings, accounts, { shouldContinue = () => true } = {}) {
   await runInbox(settings, accounts);
   const adapters = buildAdapters(settings, accounts);
   const concurrency = settings.concurrency || 1;
   for (let i = 0; i < accounts.length; i += concurrency) {
+    if (!shouldContinue()) break;
     const batch = accounts.slice(i, i + concurrency);
     await tick(settings, batch, adapters);
   }
