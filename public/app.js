@@ -446,8 +446,10 @@ document.getElementById('btn-test-notify').addEventListener('click', async (e) =
   btn.disabled = true;
   btn.textContent = '发送中…';
   try {
-    await api('POST', '/api/notifications/test');
-    alert('测试通知已发出，去看看收到没有。\n如果没收到，检查一下填的token/地址对不对。');
+    const result = await api('POST', '/api/notifications/test');
+    alert(result.queued
+      ? 'PushPlus 已受理测试通知，请在手机微信里确认收到。\n受理不代表送达；若未收到，请在 PushPlus 官网检查发送记录、微信接收设置和额度。'
+      : '测试通知已发出，去看看收到没有。\n如果没收到，检查一下填的token/地址对不对。');
   } catch (err) {
     alert('发送失败：' + err.message);
   } finally {
@@ -701,6 +703,7 @@ function fillSettingsForm(settings) {
   document.getElementById('s-notify-tg-chat').value = (notif.telegram || {}).chatId || '';
   document.getElementById('s-notify-wecom-url').value = (notif.wecom || {}).webhookUrl || '';
   document.getElementById('s-notify-bark-url').value = (notif.bark || {}).serverUrl || '';
+  document.getElementById('s-notify-pushplus-token').value = (notif.pushplus || {}).token || '';
   document.getElementById('s-notify-webhook-url').value = (notif.webhook || {}).url || '';
   updateNotifyFields();
 
@@ -755,6 +758,7 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
     },
     wecom: { webhookUrl: document.getElementById('s-notify-wecom-url').value.trim() },
     bark: { serverUrl: document.getElementById('s-notify-bark-url').value.trim() },
+    pushplus: { token: document.getElementById('s-notify-pushplus-token').value.trim() },
     webhook: { url: document.getElementById('s-notify-webhook-url').value.trim() },
   };
   settings.bitbrowser = {

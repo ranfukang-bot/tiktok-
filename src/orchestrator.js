@@ -62,7 +62,7 @@ async function pauseAndNotify(account, settings, { reason, code, log, howToFix }
     const latest = getState(account.name);
     latest.notifiedForPause = true;
     setState(account.name, latest);
-    log.info('已推送通知');
+    log.info(result.queued ? '通知已提交 PushPlus，手机送达以接收端为准' : '已推送通知');
   }
 }
 

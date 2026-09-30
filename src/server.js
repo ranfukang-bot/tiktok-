@@ -165,8 +165,8 @@ app.post('/api/accounts/:name/resolve', async (req, res) => {
 // "发送测试通知"按钮：故意把错误原样抛给前端，方便用户看出是哪里填错了
 app.post('/api/notifications/test', async (req, res) => {
   try {
-    await sendTestNotification(loadSettings());
-    res.json({ ok: true });
+    const result = await sendTestNotification(loadSettings());
+    res.json({ ok: true, queued: Boolean(result?.queued) });
   } catch (err) {
     handleError(res, err);
   }

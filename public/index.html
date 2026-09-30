@@ -243,6 +243,7 @@
                 <option value="telegram">Telegram 机器人</option>
                 <option value="wecom">企业微信群机器人</option>
                 <option value="bark">Bark（iPhone推送）</option>
+                <option value="pushplus">PushPlus 微信通知（安卓/iPhone）</option>
                 <option value="webhook">自定义 Webhook</option>
               </select>
             </div>
@@ -270,6 +271,15 @@
             <div class="field">
               <label>Bark 推送地址</label>
               <input type="text" id="s-notify-bark-url" placeholder="装好Bark这个App后，App首页显示的那个地址">
+            </div>
+          </div>
+
+          <div class="form-grid narrow notify-cfg" data-provider="pushplus">
+            <div class="field">
+              <label for="s-notify-pushplus-token">PushPlus Token</label>
+              <input type="password" id="s-notify-pushplus-token" autocomplete="off" placeholder="填写她自己的 PushPlus Token，不要填你的 Bark 地址">
+              <div class="hint">用接收人的微信登录 <a href="https://www.pushplus.plus/" target="_blank" rel="noopener noreferrer">PushPlus 官网</a>，按官网要求关注公众号、完成发送端实名认证并取得 Token。开启微信通知；保存后发送测试，并在手机确认收到。</div>
+              <div class="hint">只通知这台电脑配置的接收人，不按国家分流。推送有额度和频率限制；API 受理不代表手机已送达。Token 不要公开或发进群。</div>
             </div>
           </div>
 

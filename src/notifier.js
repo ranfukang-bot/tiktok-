@@ -43,6 +43,24 @@ const PROVIDERS = {
     await postJson(base, { title, body: text, group: 'TikTok发布' });
   },
 
+  // 微信公众号接收，安卓/iPhone均可；每台电脑填写自己的接收账号Token。
+  async pushplus(cfg, { title, text }) {
+    const token = String(cfg.token || '').trim();
+    if (!token) throw new Error('PushPlus 需要填写接收账号的 Token，请先保存全局设置');
+    const res = await postJson('https://www.pushplus.plus/send', {
+      token, title, content: text, template: 'txt', channel: 'wechat',
+    });
+    let result;
+    try { result = await res.json(); }
+    catch { throw new Error('PushPlus 返回了无法识别的响应，请稍后测试'); }
+    if (result?.code !== 200) {
+      const message = String(result?.msg || '响应缺少成功状态码').split(token).join('[已隐藏Token]').slice(0, 200);
+      throw new Error(`PushPlus 拒绝请求（${result?.code ?? '未知'}）：${message}`);
+    }
+    // API成功只代表已受理，不能声称手机已经收到。
+    return { queued: true };
+  },
+
   // 自定义 webhook：原样POST一个JSON过去，方便你接自己的系统
   async webhook(cfg, payload) {
     if (!cfg.url) throw new Error('自定义webhook需要填 url');
@@ -69,8 +87,8 @@ export async function notify(settings, payload, log) {
   if (!provider) return { sent: false, skipped: `未知的通知渠道: ${cfg.provider}` };
 
   try {
-    await provider(cfg[cfg.provider] || {}, payload);
-    return { sent: true };
+    const result = await provider(cfg[cfg.provider] || {}, payload);
+    return { sent: true, ...(result?.queued ? { queued: true } : {}) };
   } catch (err) {
     // 通知发不出去是小事，绝不能因此打断发布流程
     if (log) log.warn(`通知发送失败(${cfg.provider}): ${err.message}`);
@@ -84,7 +102,7 @@ export async function sendTestNotification(settings) {
   if (!cfg.enabled) throw new Error('通知功能还没启用，请先勾选启用并保存设置');
   const provider = PROVIDERS[cfg.provider];
   if (!provider) throw new Error(`未知的通知渠道: ${cfg.provider}`);
-  await provider(cfg[cfg.provider] || {}, {
+  return provider(cfg[cfg.provider] || {}, {
     title: '✅ TikTok批量发布控制台 测试通知',
     text: '能看到这条消息说明通知配置成功了。真正需要你处理的时候才会推送，不会打扰你。',
   });

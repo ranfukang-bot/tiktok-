@@ -47,7 +47,7 @@
     2400000
   ],
   "notifications": {
-    "_说明": "账号真正需要你处理时推一条消息。provider 可选 telegram / wecom / bark / webhook，填好对应那一段即可。",
+    "_说明": "账号真正需要你处理时推一条消息。provider 可选 telegram / wecom / bark / pushplus / webhook，每台电脑独立选择一种。PushPlus 用接收人的微信账号 Token，需按官网要求实名认证并关注公众号。",
     "enabled": false,
     "provider": "telegram",
     "telegram": {
@@ -59,6 +59,9 @@
     },
     "bark": {
       "serverUrl": ""
+    },
+    "pushplus": {
+      "token": ""
     },
     "webhook": {
       "url": ""
