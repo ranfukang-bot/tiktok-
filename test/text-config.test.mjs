@@ -25,3 +25,10 @@ test('安全错误立即暂停，不反复重传有问题的视频', () => {
   assert.equal(classifyError(new Error('页面结构不受支持：未知弹窗')).kind, 'config');
   assert.equal(classifyError(new Error('等待元素超时'), { publishAttempted: true }).code, 'uncertain_publish');
 });
+
+test('商品名称候选耗尽立即暂停，发布结果不确定仍优先保护', () => {
+  const err = new Error('page.evaluate: Error: 商品锚点名称候选已耗尽（已换5个单词），需要人工处理');
+  assert.equal(classifyError(err).kind, 'never_retry');
+  assert.equal(classifyError(err).code, 'content_error');
+  assert.equal(classifyError(err, { publishAttempted: true }).code, 'uncertain_publish');
+});

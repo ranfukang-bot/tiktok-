@@ -510,18 +510,51 @@ export function installTkqInPage(config) {
     }
     // 名字里有 TikTok 不接受的字符时，照着页面报的把那些字符去掉再继续。
     // 只改显示用的锚点名称，挂哪个商品是前面按ID选定的，不受影响。
-    const anchorName = await confirmAnchorName(nameModal, nameInput);
+    const anchorName = await confirmAnchorName(nameModal, nameInput, productName);
     attachedProduct = { productId, anchorName };
     log('商品链接添加完成并已核对锚点: ' + productId);
     return { ...attachedProduct };
   }
 
-  async function confirmAnchorName(nameModal, nameInput) {
+  async function confirmAnchorName(nameModal, nameInput, productName) {
+    // 用完整商品名取词，避免预填的30字符截断留下半个单词。
+    // 只简化显示名称；商品身份仍由上面的精确ID和原始预填值校验保证。
+    const limit = Math.min(30, nameInput.maxLength > 0 ? nameInput.maxLength : 30);
+    const seen = new Set([nameInput.value.trim().toLocaleLowerCase()]);
+    const candidates = (productName.match(/[\p{L}\p{N}][\p{L}\p{M}\p{N}]*/gu) || [])
+      .filter((word) => /^[\p{L}\p{M}]+$/u.test(word) && [...word].length >= 2 && word.length <= limit)
+      .filter((word) => {
+        const key = word.toLocaleLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).slice(0, 5);
+    let replacements = 0;
+    let lastRejection = '';
+    const attemptedNames = new Set();
     // 某些校验由“添加”请求返回，点击前没有 aria-invalid 或红字。
     // 每次只提交一次，然后等待成功或明确拒绝；网络没回包时不能重复提交。
-    for (let attempt = 0; attempt < 6; attempt += 1) {
-      const anchorName = await fixInvalidAnchorName(nameModal, nameInput);
+    for (let attempt = 0; attempt < 12; attempt += 1) {
       if (getTopModal() !== nameModal) throw new Error('商品名称确认弹窗发生变化，已停止挂车');
+      let anchorName;
+      try {
+        anchorName = await fixInvalidAnchorName(nameModal, nameInput);
+      } catch (err) {
+        if (err.code !== 'anchor_name_rejected') throw err;
+        lastRejection = err.message;
+        attemptedNames.add(nameInput.value.trim().toLocaleLowerCase());
+        let candidate = candidates.shift();
+        while (candidate && attemptedNames.has(candidate.toLocaleLowerCase())) candidate = candidates.shift();
+        if (!candidate) break;
+        attemptedNames.add(candidate.toLocaleLowerCase());
+        replacements += 1;
+        log(`商品名称被拒绝且无法按提示清理，尝试原商品名中的单词 ${JSON.stringify(candidate)}（第${replacements}/5个）`);
+        setInputValue(nameInput, candidate);
+        await sleep(500);
+        continue;
+      }
+      if (getTopModal() !== nameModal) throw new Error('商品名称确认弹窗发生变化，已停止挂车');
+      attemptedNames.add(anchorName.toLocaleLowerCase());
       fireClick(await waitFor(() => getWorkflowAction(nameModal, 'name'), 10000));
       const outcome = await waitForOrNull(() => {
         if (!getVisibleModalRoots().length) {
@@ -535,9 +568,10 @@ export function installTkqInPage(config) {
       if (outcome !== 'rejected') {
         throw new Error('等待元素超时：提交商品名称后，未收到挂车成功或名称校验错误，已停止重复提交');
       }
-      log('提交商品名称后收到校验错误，按页面提示清理后重试');
+      lastRejection = getNameFieldError(nameModal) || '名称输入框标记为无效';
+      log('提交商品名称后收到校验错误，尝试清理或更换原商品名中的单词');
     }
-    throw new Error('商品锚点名称提交后反复校验失败，需要人工处理');
+    throw new Error(`商品锚点名称候选已耗尽（已换${replacements}个单词），需要人工处理。最后提示：${lastRejection}`);
   }
 
   // TikTok 会拿商品名预填这个"锚点名称"，但有些商品名带它自己不接受的字符
@@ -601,16 +635,21 @@ export function installTkqInPage(config) {
       if (validation?.accepted) return nameInput.value.trim();
       if (!validation?.bad?.length) {
         const errorText = getNameFieldError(nameModal);
-        throw new Error(
+        const err = new Error(
           `商品锚点名称不被接受，但页面没有说明是哪个字符有问题（当前名称：${nameInput.value}${errorText ? '，提示：' + errorText : ''}）。` +
             '需要人工打开这个账号手动改一下名称'
         );
+        // 没有明确校验错误时可能只是请求未返回，不能据此反复换词提交。
+        if (errorText || nameInput.getAttribute('aria-invalid') === 'true') err.code = 'anchor_name_rejected';
+        throw err;
       }
 
       const bad = validation.bad;
       const cleaned = [...nameInput.value].filter((ch) => !bad.includes(ch)).join('').replace(/\s+/g, ' ').trim();
       if (!cleaned) {
-        throw new Error(`商品锚点名称里的字符被 TikTok 全部判为非法（原名：${original}），需要人工处理`);
+        const err = new Error(`商品锚点名称里的字符被 TikTok 全部判为非法（原名：${original}），需要人工处理`);
+        err.code = 'anchor_name_rejected';
+        throw err;
       }
       log(`商品锚点名称含 TikTok 不接受的字符 ${bad.map((c) => JSON.stringify(c)).join(' ')}，自动去掉后重试（第${attempt}次）`);
       setInputValue(nameInput, cleaned);

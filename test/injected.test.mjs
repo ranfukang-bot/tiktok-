@@ -59,6 +59,8 @@ async function mockProductWorkflow(opts = {}) {
     const productName = opts.productName || 'Test product name';
     const prefill = opts.prefill || 'Test product';
     const badChars = opts.badChars || [];
+    window.nameSubmissions = [];
+    window.nameEdits = [];
     const keepConfirmEnabledWhenInvalid = Boolean(opts.keepConfirmEnabledWhenInvalid);
     const button = (type) => '<button class="TUXButton--' + type + '">任意语言</button>';
     const footer = () => '<div class="common-modal-footer">' + button('secondary') + button('primary') + '</div>';
@@ -85,25 +87,32 @@ async function mockProductWorkflow(opts = {}) {
           // TikTok 存在两种真实表现：有的页面会禁用按钮；菲律宾这次抓到的 DOM
           // 按钮仍显示可用，但点击非法名称时什么也不做。
           const invalidChars = () => [...new Set([...nameInput.value])].filter((c) => badChars.includes(c));
+          const genericInvalid = () => opts.rejectAllNames || (opts.rejectedNames || []).includes(nameInput.value);
           const validate = () => {
             const hit = invalidChars();
-            err.textContent = hit.length ? 'Remove invalid characters: ' + hit.join(' ') : '';
-            confirm.disabled = !keepConfirmEnabledWhenInvalid && hit.length > 0;
-            nameInput.setAttribute('aria-invalid', String(hit.length > 0));
+            const invalid = hit.length > 0 || genericInvalid() || !nameInput.value.trim();
+            err.textContent = hit.length ? 'Remove invalid characters: ' + hit.join(' ') :
+              invalid ? 'Hindi pwedeng maglaman ng mga ipinagbabawal na salita ang mga pangalan ng produkto' : '';
+            confirm.disabled = !keepConfirmEnabledWhenInvalid && invalid;
+            nameInput.setAttribute('aria-invalid', String(invalid));
           };
           nameInput.addEventListener('input', () => {
+            window.nameEdits.push(nameInput.value);
             if (opts.validateAfterSubmit) {
               err.textContent = ''; nameInput.setAttribute('aria-invalid', 'false');
+              confirm.disabled = false;
             } else validate();
           });
           nameInput.value = prefill;
           if (!opts.validateAfterSubmit) validate();
           confirm.onclick = () => {
-            if (opts.validateAfterSubmit && invalidChars().length) {
+            window.nameSubmissions.push(nameInput.value);
+            if (opts.noResponse) return;
+            if (opts.validateAfterSubmit && (invalidChars().length || genericInvalid())) {
               setTimeout(validate, 150);
               return;
             }
-            if (invalidChars().length) return;
+            if (invalidChars().length || genericInvalid()) return;
             const finalName = nameInput.value.trim();
             type.remove(); name.remove();
             const anchor = document.createElement('div'); anchor.className = 'anchor-container';
@@ -515,6 +524,59 @@ test('商品名称提交后才异步报非法字符：清理并再次提交后�
   const result = await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
   assert.equal(result.anchorName, '[EXCLUSIVE CREATOR] Sample');
   assert.equal(await page.evaluate(() => window.__tkq.assertReadyToPublish()), true);
+});
+
+test('名称未点名违禁词：从完整商品名取词，避开截断词和规格数字', async () => {
+  await fresh();
+  await mockProductWorkflow({
+    productName: 'Brand 1Pc 8mm/10mm Sample Earrings', prefill: 'Brand 1Pc 8mm/10mm Samp',
+    rejectedNames: ['Brand 1Pc 8mm/10mm Samp', 'Brand'], keepConfirmEnabledWhenInvalid: true,
+  });
+  const result = await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+  assert.equal(result.anchorName, 'Sample');
+  assert.deepEqual(await page.evaluate(() => window.nameEdits), ['Brand', 'Sample']);
+  assert.deepEqual(await page.evaluate(() => window.nameSubmissions), ['Sample']);
+  assert.equal(await page.evaluate(() => window.__tkq.assertReadyToPublish()), true);
+});
+
+test('提交后才报未点名违禁词：逐个换词，成功后不再提交', async () => {
+  await fresh();
+  await mockProductWorkflow({
+    productName: 'Brand brand Sample Earrings', prefill: 'Brand brand Sample',
+    rejectedNames: ['Brand brand Sample', 'Brand'], validateAfterSubmit: true,
+  });
+  const result = await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+  assert.equal(result.anchorName, 'Sample');
+  assert.deepEqual(await page.evaluate(() => window.nameSubmissions), ['Brand brand Sample', 'Brand', 'Sample']);
+  assert.equal(await page.evaluate(() => window.__tkq.assertReadyToPublish()), true);
+});
+
+test('名称候选全部拒绝：最多换5个，不清空、不点发布', async () => {
+  await fresh();
+  await mockProductWorkflow({
+    productName: 'Alpha Beta Gamma Delta Epsilon Zeta', prefill: 'Alpha Beta',
+    rejectAllNames: true, validateAfterSubmit: true,
+  });
+  await assert.rejects(page.evaluate(() => window.__tkq.addProductLink('10000000000001')), /候选已耗尽/);
+  assert.deepEqual(await page.evaluate(() => window.nameSubmissions), ['Alpha Beta', 'Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon']);
+  assert.equal(await page.evaluate(() => window.nameEdits.every((name) => name.length > 0 && name.length <= 30)), true);
+  await assert.rejects(page.evaluate(() => window.__tkq.assertReadyToPublish()), /弹窗|商品/);
+});
+
+test('纯数字商品名没有单词候选：明确报错，不编造空标题', async () => {
+  await fresh();
+  await mockProductWorkflow({ productName: '12345 67890', prefill: '12345', rejectAllNames: true });
+  await assert.rejects(page.evaluate(() => window.__tkq.addProductLink('10000000000001')), /候选已耗尽/);
+  assert.deepEqual(await page.evaluate(() => window.nameEdits), []);
+  assert.deepEqual(await page.evaluate(() => window.nameSubmissions), []);
+});
+
+test('名称提交后无响应：不当作违禁词，不重复提交', async () => {
+  await fresh();
+  await mockProductWorkflow({ noResponse: true });
+  await assert.rejects(page.evaluate(() => window.__tkq.addProductLink('10000000000001')), /未收到挂车成功或名称校验错误/);
+  assert.deepEqual(await page.evaluate(() => window.nameSubmissions), ['Test product']);
+  assert.deepEqual(await page.evaluate(() => window.nameEdits), []);
 });
 
 test('商品全流程靠结构和精确ID；本地模拟点击最终按钮一次', async () => {
