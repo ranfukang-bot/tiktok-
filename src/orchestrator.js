@@ -25,6 +25,8 @@ import {
   evaluateSlots,
   assertSlotCanStartUpload,
   recordConfirmedQuota,
+  nextPublishableIndex,
+  assertProductCanPublish,
 } from './dailyQuota.js';
 
 function sleep(ms) {
@@ -109,7 +111,17 @@ async function findOrOpenStudioPage(browser) {
 
 async function processAccountOnce(account, settings, adapter, log, slot = null) {
   const state = getState(account.name);
+  const timezone = resolveTimezone(settings, account);
+  rolloverIfNewDay(state, timezone);
+  const eligibleIndex = nextPublishableIndex(state, timezone);
+  if (eligibleIndex < 0) return;
   const nextIdx = state.doneIndex + 1;
+  // 只把选中的未发布视频提到待发布队首，不能直接跳 doneIndex，否则会丢掉被跳过的库存。
+  if (eligibleIndex !== nextIdx) {
+    const [selected] = state.items.splice(eligibleIndex, 1);
+    state.items.splice(nextIdx, 0, selected);
+  }
+  setState(account.name, state);
   const item = state.items[nextIdx];
   if (!item) return;
 
@@ -141,14 +153,16 @@ async function processAccountOnce(account, settings, adapter, log, slot = null) 
         beforeUpload: () => {
           // 开浏览器、等页面可能耗时，必须在真正提交视频文件前再检查准入。
           assertSlotCanStartUpload(slot, Date.now());
+          assertProductCanPublish(getState(account.name), item.productId, timezone);
         },
         beforePublishClick: async () => {
           // 节点只限制开始上传。已开始的这一条通过全部安全检查后，允许跨点完成。
           if (slot && Date.now() >= slot.endMs) {
             log.info(`已在 ${slot.start}-${slot.end} 节点内开始上传，虽然已过截止时间，仍完成本条发布（安全检查已通过）`);
           }
-          publishAttempted = true;
           const s = getState(account.name);
+          assertProductCanPublish(s, item.productId, timezone);
+          publishAttempted = true;
           s.pendingIndex = nextIdx;
           s.pendingSince = Date.now();
           // 记下这一条是为哪个节点发的：万一发布结果不确定，人可能过几个小时才来
@@ -168,7 +182,7 @@ async function processAccountOnce(account, settings, adapter, log, slot = null) 
       publishConfirmed = true;
       latest.doneIndex = nextIdx;
       // 在清掉 pendingSince 之前按实际发布尝试日期记账，跨午夜确认不扣新一天额度。
-      const countedToday = recordConfirmedQuota(latest, resolveTimezone(settings, account));
+      const countedToday = recordConfirmedQuota(latest, timezone, Date.now(), item.productId);
       latest.pendingIndex = null;
       latest.pendingSince = null;
       // 时间节点模式下由节点本身控制什么时候发，不能再叠一个随机间隔：
@@ -302,6 +316,10 @@ async function tickAccount(settings, account, adapters) {
   } catch (err) {
     // 开浏览器/等页面时过点、尚未上传：不计失败，留到下一节点；已上传的不走此分支。
     if (err.slotExpired) {
+      log.info(err.message);
+      return;
+    }
+    if (err.productDailyLimitReached && !err.publishAttempted) {
       log.info(err.message);
       return;
     }

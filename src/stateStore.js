@@ -34,6 +34,8 @@ function defaultState() {
     // 跟当前算出来的日期对不上就说明跨天了，publishedToday 会被清零重新计数。
     publishDayKey: '',
     publishedToday: 0,
+    // 独立于文件队列保存，已发布视频被回收、重新扫描或重启后仍能限制同产品。
+    publishedProductIdsToday: [],
     // 固定时间节点模式：今天已经用掉了哪几个节点(存节点的开始时间，如 "19:30")。
     // 跨天跟 publishedToday 一起清空。
     slotsUsedToday: [],
