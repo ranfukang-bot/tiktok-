@@ -155,6 +155,10 @@ function renderAccounts() {
       const tz = runtime.timezone || 'Asia/Jakarta';
       stateHtml = `<span class="state off" title="按 ${escapeAttr(tz)} 的时间算，过了当地0点自动刷新">今日额度已满 ${runtime.publishedToday}/${runtime.dailyLimit}</span>`;
       edge = 'idle';
+    } else if (runtime.productLimitReached) {
+      const tz = runtime.timezone || 'Asia/Jakarta';
+      stateHtml = `<span class="state off" title="剩余视频的产品今天都已发过；按 ${escapeAttr(tz)} 过了当地0点恢复资格，仍按原发布计划执行。加入今天未发过的产品可继续排队。">同产品今日已发，等待次日</span>`;
+      edge = 'idle';
     } else if (runtime.inPostingWindow === false) {
       const wait = runtime.nextWindowStart ? fmtRemaining(runtime.nextWindowStart - Date.now()) : '';
       if (runtime.scheduleMode === 'slots') {

@@ -17,7 +17,7 @@ export function currentDayKey(timezone, nowMs = Date.now()) {
 
 // 自动确认与人工确认共用记账规则：按点击发布的日期，而不是收到确认的日期。
 // 只维护今天的额度；昨天的发布不扣今天额度，也不覆盖今天已有的计数。
-export function recordConfirmedQuota(state, timezone, nowMs = Date.now()) {
+export function recordConfirmedQuota(state, timezone, nowMs = Date.now(), productId = '') {
   const dayKey = currentDayKey(timezone, nowMs);
   const since = state.pendingSince;
   const publishedDay = Number.isFinite(since) && since > 0
@@ -27,10 +27,15 @@ export function recordConfirmedQuota(state, timezone, nowMs = Date.now()) {
     state.publishDayKey = dayKey;
     state.publishedToday = 0;
     state.slotsUsedToday = [];
+    state.publishedProductIdsToday = [];
   }
   // 极老记录连日期也没有时，保守地占今天一条额度，避免突破上限。
   if (publishedDay !== dayKey) return false;
   state.publishedToday = (state.publishedToday || 0) + 1;
+  const id = String(productId).trim();
+  if (id) {
+    state.publishedProductIdsToday = [...new Set([...(state.publishedProductIdsToday || []), id])];
+  }
   return true;
 }
 
@@ -42,12 +47,32 @@ export function rolloverIfNewDay(state, timezone) {
   state.publishDayKey = today;
   state.publishedToday = 0;
   state.slotsUsedToday = [];
+  state.publishedProductIdsToday = [];
   return true;
 }
 
 export function hasQuotaRemaining(state, dailyLimit) {
   if (!Number.isFinite(dailyLimit)) return true; // 没设上限就不限制
   return (state.publishedToday || 0) < dailyLimit;
+}
+
+export function publishedProductIdsForDay(state, timezone, nowMs = Date.now()) {
+  return state.publishDayKey === currentDayKey(timezone, nowMs)
+    ? state.publishedProductIdsToday || [] : [];
+}
+
+// 不改变已完成前缀；跳过今天已发的产品，寻找后面的可发布视频。
+export function nextPublishableIndex(state, timezone, nowMs = Date.now()) {
+  const published = new Set(publishedProductIdsForDay(state, timezone, nowMs));
+  return state.items.findIndex((item, index) =>
+    index > state.doneIndex && !published.has(String(item.productId || '').trim()));
+}
+
+export function assertProductCanPublish(state, productId, timezone, nowMs = Date.now()) {
+  if (!publishedProductIdsForDay(state, timezone, nowMs).includes(String(productId || '').trim())) return;
+  const err = new Error(`商品 ${productId} 今天已发布过，本账号同产品每天只发一条，其余视频留到次日`);
+  err.productDailyLimitReached = true;
+  throw err;
 }
 
 // ===== 允许发布的时间段(按账号时区算) =====

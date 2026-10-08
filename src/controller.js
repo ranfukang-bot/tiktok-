@@ -3,7 +3,7 @@ import { tickAll, isAccountProcessing, syncAccountFolder } from './orchestrator.
 import { getState, setState, resume } from './stateStore.js';
 import { createLogger } from './logger.js';
 import { deletePublishedFile } from './folderScanner.js';
-import { currentDayKey, isWithinPostingWindow, nextPostingWindowStartMs, evaluateSlots, creditedSlotOnConfirm, slotTargetsForDay, recordConfirmedQuota } from './dailyQuota.js';
+import { currentDayKey, isWithinPostingWindow, nextPostingWindowStartMs, evaluateSlots, creditedSlotOnConfirm, slotTargetsForDay, recordConfirmedQuota, nextPublishableIndex } from './dailyQuota.js';
 
 let running = false;
 let loopPromise = null;
@@ -99,6 +99,7 @@ export function getStatus() {
         total: state.items.length,
         doneIndex: state.doneIndex,
         remaining: Math.max(0, state.items.length - (state.doneIndex + 1)),
+        productLimitReached: state.doneIndex + 1 < state.items.length && nextPublishableIndex(state, timezone) < 0,
         paused: state.paused,
         pauseReason: state.pauseReason,
         pauseCode: state.pauseCode,
@@ -148,7 +149,7 @@ export async function resolveUncertain(accountName, decision) {
     const plan = resolvePostingPlan(settings);
     const account = loadAllAccounts().find((a) => a.name === accountName);
     const timezone = resolveTimezone(settings, account || { name: accountName });
-    recordConfirmedQuota(state, timezone);
+    recordConfirmedQuota(state, timezone, Date.now(), publishedItem?.productId || '');
     const dayKey = state.publishDayKey;
     if (plan.mode === 'slots') {
       state.nextTime = Date.now();
