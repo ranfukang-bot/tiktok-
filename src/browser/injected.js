@@ -500,8 +500,21 @@ export function installTkqInPage(config) {
     if (!row) throw new Error(`未找到精确商品ID ${productId}，请核对该账号橱窗`);
     const radio = row.querySelector('input[type="radio"]');
     const productName = row.querySelector('.product-name')?.textContent.trim();
-    if (!radio || !isEnabled(radio) || !productName) {
-      throw new Error('页面结构不受支持：商品行缺少可用单选框或商品名称');
+    if (!radio || !productName) {
+      throw new Error('页面结构不受支持：商品行缺少单选框或商品名称');
+    }
+    if (!isEnabled(radio)) {
+      // 单选框存在但被平台禁用是商品状态问题，不能误报成页面改版。
+      // 按库存表头找对应单元格，避免把价格0或其它列的数字当成库存。
+      const table = row.closest('table, [role="table"], .product-table');
+      const headers = Array.from(table?.querySelectorAll('thead th, thead td, [role="columnheader"]') || []);
+      const stockIndex = headers.findIndex((cell) => /^(stock|stok|inventory|库存|庫存)$/i.test(cell.textContent.trim()));
+      const cells = Array.from(row.querySelectorAll('td, [role="cell"]'));
+      const stock = stockIndex >= 0 ? cells[stockIndex]?.textContent.trim() : null;
+      if (stock && /^0(?:\.0+)?$/.test(stock)) {
+        throw new Error(`商品没库存：商品ID ${productId} 库存为0，TikTok已禁止选择，无法挂车发布。请等补货后再继续，或移走该商品的待发视频。`);
+      }
+      throw new Error(`商品当前不可用：商品ID ${productId} 的选择框被TikTok禁用，无法挂车发布。请检查库存、上架状态和挂车权限后再继续。`);
     }
     fireClick(radio);
     if (!await waitForOrNull(() => findProductRow()?.querySelector('input[type="radio"]')?.checked, 3000, 100)) {

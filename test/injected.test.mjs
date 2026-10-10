@@ -77,6 +77,14 @@ async function mockProductWorkflow(opts = {}) {
           '<table class="product-table"><tbody><tr><td><input type="radio"><span class="product-name">' + productName + '</span></td><td class="product-tb-cell">10000000000001</td></tr></tbody></table></div>' + footer());
         const next = select.querySelector('.TUXButton--primary'); next.disabled = true;
         select.querySelector('input[type=radio]').onchange = () => { next.disabled = false; };
+        if (opts.productUnavailable) {
+          select.querySelector('input[type=radio]').disabled = true;
+          const table = select.querySelector('table');
+          table.insertAdjacentHTML('afterbegin', '<thead><tr><th>Product name</th><th>Product ID</th><th>Price</th><th>Stock</th><th>Status</th></tr></thead>');
+          const row = table.querySelector('tbody tr');
+          row.insertAdjacentHTML('beforeend', '<td>0</td><td></td><td>Hindi available</td>');
+          row.children[3].textContent = String(opts.stock ?? '—');
+        }
         next.onclick = () => {
           select.remove();
           const name = show('', '<div class="common-modal-body"><input type="text">' +
@@ -611,6 +619,17 @@ test('名称提交后无响应：不当作违禁词，不重复提交', async ()
   assert.deepEqual(await page.evaluate(() => window.nameSubmissions), ['Test product']);
   assert.deepEqual(await page.evaluate(() => window.nameEdits), []);
 });
+
+for (const [stock, expected] of [[0, /商品没库存：.*10000000000001.*库存为0/], [5, /商品当前不可用：/], [null, /商品当前不可用：/]]) {
+  test('商品不可选时按真实库存报错，库存=' + stock, async () => {
+    await fresh();
+    await mockProductWorkflow({ productUnavailable: true, stock });
+    await assert.rejects(page.evaluate(() => window.__tkq.addProductLink('10000000000001')), expected);
+    assert.equal(await page.locator('.product-table input[type=radio]').isChecked(), false);
+    assert.deepEqual(await page.evaluate(() => window.nameSubmissions), []);
+    assert.equal(await page.evaluate(() => window.postClicks), 0);
+  });
+}
 
 test('商品全流程靠结构和精确ID；本地模拟点击最终按钮一次', async () => {
   await fresh(); await mockProductWorkflow();

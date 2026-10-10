@@ -26,6 +26,14 @@ test('安全错误立即暂停，不反复重传有问题的视频', () => {
   assert.equal(classifyError(new Error('等待元素超时'), { publishAttempted: true }).code, 'uncertain_publish');
 });
 
+test('缺货或不可用属于商品问题，不误报配置错误或反复上传', () => {
+  for (const message of ['商品没库存：商品ID 123 库存为0', '商品当前不可用：商品ID 123 的选择框被TikTok禁用']) {
+    const verdict = classifyError(new Error('page.evaluate: Error: ' + message));
+    assert.equal(verdict.kind, 'never_retry');
+    assert.equal(verdict.code, 'content_error');
+  }
+});
+
 test('商品名称候选耗尽立即暂停，发布结果不确定仍优先保护', () => {
   const err = new Error('page.evaluate: Error: 商品锚点名称候选已耗尽（已换5个单词），需要人工处理');
   assert.equal(classifyError(err).kind, 'never_retry');
