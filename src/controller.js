@@ -123,7 +123,7 @@ export function getStatus() {
   } catch (err) {
     settingsError = err.message;
   }
-  return { running, lastTickAt, lastTickError, settingsError, accounts, slotCompletionPolicy: 'finish-started-upload', schedulerPolicy: 'single-flight-v1' };
+  return { running, lastTickAt, lastTickError, settingsError, accounts, slotCompletionPolicy: 'finish-started-upload', schedulerPolicy: 'single-flight-v1', uploadSelectionPolicy: 'verify-receipt-on-timeout-v1' };
 }
 
 export async function resolveUncertain(accountName, decision) {
