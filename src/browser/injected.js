@@ -294,6 +294,19 @@ export function installTkqInPage(config) {
     return { state: 'uploading', progress: progress?.style.width || '' };
   }
 
+  // setInputFiles 的协议调用可能超时，但页面已收到文件并移除了文件输入框。
+  // 这里只确认接收的是本条文件，不代表上传完成，更不能代替后续发布安全检查。
+  function hasAcceptedUpload(filename) {
+    checkForAppCrash();
+    const container = uniqueVisible(document, '[data-e2e="upload_status_container"]', '上传状态容器');
+    if (!container || !filename) return false;
+    const title = uniqueVisible(container, '.info-title > span', '上传文件名');
+    if (!title || title.textContent.trim() !== filename) return false;
+    if (!container.querySelector('.info-progress') || !container.querySelector('.info-status')) return false;
+    const upload = getUploadState();
+    return upload.state === 'uploading' || upload.state === 'success';
+  }
+
   // 上传等多久，看的是【有没有卡住】，不是【用了多久】。
   //
   // 原来写死等 3 分钟，网速慢的时候视频还在传（进度条明明在涨）就被判"等待元素超时"，
@@ -937,6 +950,7 @@ export function installTkqInPage(config) {
     isUploadPage,
     isContentPage,
     getUploadState,
+    hasAcceptedUpload,
     getChecksState,
     assertChecksPassed,
     assertReadyToPublish,

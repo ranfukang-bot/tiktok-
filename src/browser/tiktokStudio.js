@@ -116,7 +116,7 @@ async function isCleanUploadPage(page) {
   } catch {
     return false;
   }
-  return page.evaluate(() => !document.querySelector('video, [data-e2e="video_preview"]'));
+  return page.evaluate(() => !document.querySelector('video, [data-e2e="video_preview"], [data-e2e="upload_status_container"]'));
 }
 
 // 原脚本全程待在同一个页面里，靠点侧边栏"上传"按钮做页内跳转，从来不整页刷新，
@@ -151,7 +151,18 @@ export async function runOneUploadCycle({ page, account, item, config, log, befo
   await fileInput.waitFor({ state: 'attached', timeout: 30000 });
   // 时间节点限制的是开始上传，不是完成时间；放行后仍必须经过后面的全部安全检查。
   if (beforeUpload) await beforeUpload();
-  await fileInput.setInputFiles(absolutePath);
+  try {
+    await fileInput.setInputFiles(absolutePath);
+  } catch (err) {
+    if (err.name !== 'TimeoutError') throw err;
+    // 已交接的文件不能因协议回执超时而刷新重传。仅在页面明确显示本条完整文件名
+    // 且上传状态正常时接回原流程；检查失败/页面丢失/身份不符都保留原错误。
+    const receipt = await page.waitForFunction(([filename]) => window.__tkq.hasAcceptedUpload(filename) === true,
+      [item.filename], { timeout: 5000, polling: 250 }).catch(() => null);
+    if (!receipt) throw err;
+    await receipt.dispose().catch(() => {});
+    log.warn(`选文件操作等待超时，但页面已确认接收 ${item.filename}，继续等待上传完成，不重复上传`);
+  }
 
   await humanDelay(1500, 3000);
   await page.evaluate(([filename]) => window.__tkq.waitForUploadComplete(filename), [item.filename]);

@@ -364,6 +364,39 @@ test('上传99%或未知结构不能算完成，不读完成提示文案', async
   assert.equal(await page.evaluate(() => window.__tkq.getUploadState().state), 'unknown');
 });
 
+test('选文件回执：完整文件名匹配且确已接收，上传中和完成状态均可接回等待流程', async () => {
+  await fresh();
+  await page.evaluate(() => document.querySelector('[data-e2e="upload_status_container"]').insertAdjacentHTML(
+    'afterbegin', '<div class="info-title"><span>123456 (2).mp4</span><div>720P</div></div>'));
+  assert.equal(await page.evaluate(() => window.__tkq.hasAcceptedUpload('123456 (2).mp4')), true);
+  assert.equal(await page.evaluate(() => window.__tkq.hasAcceptedUpload('123456.mp4')), false);
+  assert.equal(await page.evaluate(() => window.__tkq.hasAcceptedUpload('123456 (1).mp4')), false);
+  await resetUploadToStart();
+  await setUploadProgress(30);
+  assert.equal(await page.evaluate(() => window.__tkq.hasAcceptedUpload('123456 (2).mp4')), true);
+  await setUploadProgress(30, { error: true });
+  assert.equal(await page.evaluate(() => window.__tkq.hasAcceptedUpload('123456 (2).mp4')), false);
+});
+
+for (const variation of ['hidden', 'missingTitle', 'missingProgress', 'missingStatus', 'duplicate']) {
+  test(`选文件回执不能使用隐藏、残缺或多义的上传状态：${variation}`, async () => {
+    await fresh();
+    await page.evaluate(variation => {
+      const c = document.querySelector('[data-e2e="upload_status_container"]');
+      c.insertAdjacentHTML('afterbegin', '<div class="info-title"><span>123456.mp4</span></div>');
+      if (variation === 'hidden') c.style.display = 'none';
+      if (variation === 'missingTitle') c.querySelector('.info-title').remove();
+      if (variation === 'missingProgress') c.querySelector('.info-progress').remove();
+      if (variation === 'missingStatus') c.querySelector('.info-status').remove();
+      if (variation === 'duplicate') c.after(c.cloneNode(true));
+    }, variation);
+    const accepted = await page.evaluate(() => {
+      try { return window.__tkq.hasAcceptedUpload('123456.mp4'); } catch { return false; }
+    });
+    assert.equal(accepted, false);
+  });
+}
+
 test('上传就绪需等待默认标题稳定，不依赖翻译', async () => {
   await fresh(); await page.locator('[contenteditable]').fill('test-file');
   await page.evaluate(() => window.__tkq.waitForUploadComplete('test-file.mp4'));
