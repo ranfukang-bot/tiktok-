@@ -3,6 +3,28 @@ import { resolveItemPath } from '../folderScanner.js';
 
 const UPLOAD_URL = 'https://www.tiktok.com/tiktokstudio/upload?from=upload';
 const PUBLISH_CONFIRM_TIMEOUT_MS = 45000;
+export const UPLOAD_RECEIPT_TIMEOUT_MS = 90000;
+
+export async function selectVideoFile({ page, fileInput, absolutePath, filename, log, receiptTimeoutMs = UPLOAD_RECEIPT_TIMEOUT_MS }) {
+  try {
+    await fileInput.setInputFiles(absolutePath);
+  } catch (err) {
+    if (err.name !== 'TimeoutError') throw err;
+    // TikTok may block its renderer while preparing a video. The file handoff
+    // can time out at 30s even though the upload UI appears around 40s later.
+    // Keep the current page and never select the same file a second time here.
+    log.warn(`选文件回执超时，正在等待页面确认接收 ${filename}（最多 ${Math.ceil(receiptTimeoutMs / 1000)} 秒），此时不会刷新或重传`);
+    const started = Date.now();
+    const receipt = await page.waitForFunction(([name]) => window.__tkq?.hasAcceptedUpload(name) === true,
+      [filename], { timeout: receiptTimeoutMs, polling: 250 }).catch(() => null);
+    if (!receipt) {
+      log.warn(`等待页面确认接收未成功：${filename}；没有进入标题、商品或发布步骤`);
+      throw err;
+    }
+    await receipt.dispose().catch(() => {});
+    log.warn(`页面已确认接收 ${filename}（额外等待 ${Math.ceil((Date.now() - started) / 1000)} 秒），继续等待上传完成，不重复上传`);
+  }
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -151,18 +173,7 @@ export async function runOneUploadCycle({ page, account, item, config, log, befo
   await fileInput.waitFor({ state: 'attached', timeout: 30000 });
   // 时间节点限制的是开始上传，不是完成时间；放行后仍必须经过后面的全部安全检查。
   if (beforeUpload) await beforeUpload();
-  try {
-    await fileInput.setInputFiles(absolutePath);
-  } catch (err) {
-    if (err.name !== 'TimeoutError') throw err;
-    // 已交接的文件不能因协议回执超时而刷新重传。仅在页面明确显示本条完整文件名
-    // 且上传状态正常时接回原流程；检查失败/页面丢失/身份不符都保留原错误。
-    const receipt = await page.waitForFunction(([filename]) => window.__tkq.hasAcceptedUpload(filename) === true,
-      [item.filename], { timeout: 5000, polling: 250 }).catch(() => null);
-    if (!receipt) throw err;
-    await receipt.dispose().catch(() => {});
-    log.warn(`选文件操作等待超时，但页面已确认接收 ${item.filename}，继续等待上传完成，不重复上传`);
-  }
+  await selectVideoFile({ page, fileInput, absolutePath, filename: item.filename, log });
 
   await humanDelay(1500, 3000);
   await page.evaluate(([filename]) => window.__tkq.waitForUploadComplete(filename), [item.filename]);

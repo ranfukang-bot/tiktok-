@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import pw from 'playwright-core';
 import { installTkqInPage } from '../src/browser/injected.js';
+import { selectVideoFile, UPLOAD_RECEIPT_TIMEOUT_MS } from '../src/browser/tiktokStudio.js';
 
 let browser, page;
 before(async () => {
@@ -16,6 +17,34 @@ before(async () => {
   page = await browser.newPage();
 });
 after(async () => { await browser?.close(); });
+
+test('选文件回执超时后超过旧5秒窗口才显示本条视频：等待接收而不是刷新重传', async () => {
+  await fresh();
+  await page.evaluate(() => {
+    document.querySelector('[data-e2e="upload_status_container"]').remove();
+    setTimeout(() => {
+      const c=document.createElement('div');c.dataset.e2e='upload_status_container';
+      c.innerHTML='<div class="info-title"><span>123456.mp4</span></div><div class="info-status success">完成</div><div class="info-progress success" style="width:100%"></div>';
+      document.body.append(c);
+    }, 5500);
+  });
+  let selections=0;
+  const before=Date.now();
+  await selectVideoFile({page,filename:'123456.mp4',absolutePath:'fixture.mp4',
+    fileInput:{async setInputFiles(){selections++;throw Object.assign(Error('timeout'),{name:'TimeoutError'});}},log:{warn(){}}});
+  assert.ok(Date.now()-before>=5000);
+  assert.equal(selections,1);
+  assert.equal(await page.evaluate(()=>window.postClicks),0);
+  assert.equal(UPLOAD_RECEIPT_TIMEOUT_MS,90000);
+});
+
+test('接收等待仍有硬上限；错误文件和页面未接收都不能放行', async () => {
+  await fresh();
+  let selections=0;
+  await assert.rejects(selectVideoFile({page,filename:'not-this-file.mp4',absolutePath:'fixture.mp4',receiptTimeoutMs:100,
+    fileInput:{async setInputFiles(){selections++;throw Object.assign(Error('selection timeout'),{name:'TimeoutError'});}},log:{warn(){}}}),/selection timeout/);
+  assert.equal(selections,1);assert.equal(await page.evaluate(()=>window.postClicks),0);
+});
 
 const switchHtml = '<div data-state="checked"><input role="switch" type="checkbox" checked></div>';
 const resultHtml = '<div class="status-wrapper">' +

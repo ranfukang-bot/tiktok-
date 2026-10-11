@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runOneUploadCycle } from '../src/browser/tiktokStudio.js';
+import { runOneUploadCycle, UPLOAD_RECEIPT_TIMEOUT_MS } from '../src/browser/tiktokStudio.js';
 import { installTkqInPage } from '../src/browser/injected.js';
 import { assertSlotCanStartUpload } from '../src/dailyQuota.js';
 
@@ -27,7 +27,7 @@ async function cycle({ expiredBeforeUpload = false, unsafe = false, uncertain = 
       if (fn === installTkqInPage) return;
       const code = fn.toString();
       if (code.includes('document.querySelector')) return true;
-      const name = /window\.__tkq\.(\w+)/.exec(code)?.[1];
+      const name = /window\.__tkq\??\.(\w+)/.exec(code)?.[1];
       assert.ok(name, `未识别的页面调用：${code}`);
       events.push(name);
       if (name === 'hasAcceptedUpload') {
@@ -43,7 +43,7 @@ async function cycle({ expiredBeforeUpload = false, unsafe = false, uncertain = 
     },
     async waitForURL() { if (uncertain) throw new Error('confirmation timeout'); },
     async waitForFunction(fn, args, options) {
-      assert.equal(options.timeout, 5000, '浏览器无响应时核验也必须有时限');
+      assert.equal(options.timeout, UPLOAD_RECEIPT_TIMEOUT_MS, '接收核验容纳视频初始化延迟，但仍有上限');
       if (await this.evaluate(fn, args) !== true) throw new Error('receipt timeout');
       return { async dispose() {} };
     },
