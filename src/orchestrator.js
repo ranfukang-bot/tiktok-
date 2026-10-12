@@ -140,6 +140,7 @@ async function processAccountOnce(account, settings, adapter, log, slot = null) 
     const config = {
       text: resolveText(settings, account),
       hashtagKeywords: resolveHashtags(settings, account),
+      checks: settings.checks,
     };
 
     let result;

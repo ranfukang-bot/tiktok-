@@ -802,7 +802,7 @@ export function installTkqInPage(config) {
 
   // 检查开关偶尔会是关着的——有时是页面还没渲染完就被读到，有时是TikTok自己抽风。
   // 这种情况不该叫人来处理：把开关打开、让它重新跑一遍检查就行，这跟"检查没通过"
-  // 完全是两回事。注意只做【打开】这一个方向，绝不会去关任何检查开关。
+  // 完全是两回事。普通恢复只打开；长时间卡住后的有界重启由 restartPendingCheck 负责。
   async function tryEnableCheck(name) {
     const root = getCheckRoots()[name];
     if (!root || !isVisible(root)) return false;
@@ -821,30 +821,77 @@ export function installTkqInPage(config) {
     return Boolean(ok);
   }
 
+  async function restartPendingCheck(name) {
+    checkForAppCrash();
+    assertProductPickerClosed('重新运行检查');
+    const state = getChecksState();
+    if (state.checks.some(check => check.state === 'blocked')) {
+      throw new Error('发布安全检查未通过：' + checkSummary(state));
+    }
+    if (state.checks.some(check => !['success', 'ready', 'checking'].includes(check.state))) return false;
+    const check = state.checks.find(check => check.name === name);
+    if (!['ready', 'checking'].includes(check?.state)) return false;
+    // 只在上传完成且页面允许点击时重启这一项，不能强改 disabled/checked。
+    const root = getCheckRoots()[name];
+    const input = root?.querySelector('input[role="switch"]');
+    if (getUploadState().state !== 'success' || !isVisible(input) || !isEnabled(input)) {
+      log(`${name} 检查仍在等待，但开关当前不可操作，保留页面继续等`);
+      return false;
+    }
+    log(`${name} 检查长时间无结果，尝试关闭再打开一次（保留当前视频）`);
+    fireClick(input);
+    const off = await waitForOrNull(() => {
+      const current = getCheckRoots()[name]?.querySelector('input[role="switch"]');
+      return current && !current.checked;
+    }, 4000, 100);
+    if (!off) {
+      log(`${name} 检查开关未确认关闭，不重复点击，继续等待`);
+      return false;
+    }
+    if (!await tryEnableCheck(name)) {
+      throw new Error(`版权检查开关处于关闭状态，重启 ${name} 后未能重新打开，稍后自动重试`);
+    }
+    return true;
+  }
+
   function getPostButton() {
     return uniqueVisible(document, '[data-e2e="post_video_button"]', '最终发布按钮');
   }
 
-  async function waitForChecksPassAndAssertSafe(timeoutMs = 10 * 60 * 1000) {
+  const checksOptions = config?.checks || {};
+  const configuredWaitMs = Number.isFinite(checksOptions.timeoutMs) && checksOptions.timeoutMs > 0
+    ? Math.min(checksOptions.timeoutMs, 60 * 60 * 1000) : 30 * 60 * 1000;
+  const restartAfterMs = Number.isFinite(checksOptions.restartAfterMs) && checksOptions.restartAfterMs >= 0
+    ? checksOptions.restartAfterMs : 15 * 60 * 1000;
+
+  async function waitForChecksPassAndAssertSafe(timeoutMs = configuredWaitMs) {
     assertProductPickerClosed('等待发布前检查');
-    log('等待音乐版权和内容检查双绿（最多10分钟；不会超时放行）…');
-    const deadline = Date.now() + timeoutMs;
+    log(`等待音乐版权和内容检查双绿（最多${Math.ceil(timeoutMs / 60000)}分钟；不会超时放行）…`);
+    const started = Date.now();
+    const deadline = started + timeoutMs;
     let passedSince = null;
     let previous = '';
+    let lastProgressAt = started;
     const enableTried = new Set(); // 每个开关只自动打开一次，避免跟页面来回拉锯
+    const restartTried = new Set(); // 每项最多一次，不循环重置平台审核
+    const awaitingFresh = new Set(); // 重启后不能把残留的旧绿色当作新结果
     while (Date.now() < deadline) {
       checkForAppCrash();
       assertProductPickerClosed('等待发布前检查');
       const state = getChecksState();
       const signature = state.checks.map((check) => check.state).join('/');
-      if (signature !== previous) {
-        log('检查状态: ' + checkSummary(state));
+      if (signature !== previous || Date.now() - lastProgressAt >= 60000) {
+        log(`检查已等 ${Math.floor((Date.now() - started) / 1000)} 秒: ` + checkSummary(state));
         previous = signature;
+        lastProgressAt = Date.now();
       }
 
       // 红/黄是真的没通过，立刻停——这条视频本身有问题，重试多少次都一样。
       if (state.checks.some((check) => check.state === 'blocked')) {
         throw new Error('发布安全检查未通过：' + checkSummary(state));
+      }
+      for (const check of state.checks) {
+        if (['ready', 'checking'].includes(check.state)) awaitingFresh.delete(check.name);
       }
 
       // 开关被关掉是另一回事：不是内容有问题，是这项检查压根没跑。
@@ -866,8 +913,21 @@ export function installTkqInPage(config) {
         await sleep(500);
         continue;
       }
+      if (restartAfterMs > 0 && Date.now() - started >= restartAfterMs && deadline - Date.now() > 10000) {
+        const pending = state.checks.find(check =>
+          ['ready', 'checking'].includes(check.state) && !restartTried.has(check.name));
+        if (pending) {
+          restartTried.add(pending.name);
+          if (await restartPendingCheck(pending.name)) {
+            awaitingFresh.add(pending.name);
+            log(`${pending.name} 已重新打开，等待新检查状态和绿色结果`);
+          }
+          passedSince = null;
+          continue;
+        }
+      }
       const button = getPostButton();
-      if (state.passed && button && isEnabled(button)) {
+      if (state.passed && awaitingFresh.size === 0 && button && isEnabled(button)) {
         if (passedSince === null) passedSince = Date.now();
         if (Date.now() - passedSince >= 1000) {
           assertCaptionSafe('双绿后的文案终检');
@@ -880,7 +940,14 @@ export function installTkqInPage(config) {
       }
       await sleep(250);
     }
-    throw new Error('发布安全检查未通过：等待双绿超时，不会继续发布；' + checkSummary(getChecksState()));
+    const finalState = getChecksState();
+    const summary = checkSummary(finalState);
+    // 只有明确的“尚在等待”才自动重试；未知结构、红黄和残留旧绿仍然停下。
+    if (finalState.checks.every(check => ['success', 'ready', 'checking'].includes(check.state)) &&
+        finalState.checks.some(check => ['ready', 'checking'].includes(check.state))) {
+      throw new Error(`审核等待超时（可重试）：已等 ${Math.floor((Date.now() - started) / 1000)} 秒，尚未点击发布；${summary}`);
+    }
+    throw new Error('发布安全检查未通过：等待双绿超时，或重启后未观察到新检查状态，不会继续发布；' + summary);
   }
 
   function assertReadyToPublish() {

@@ -67,7 +67,9 @@
       "url": ""
     }
   },
-  "_dom说明": "各国语言共用DOM识别，无需填写界面翻译。音乐和内容检查必须双绿，未知或超时停止。",
+  "_checks说明": "默认最多等30分钟，15分钟仍处于待检查/检查中时，只把卡住的检查开关关后再开一次（平台禁用开关则继续等待）。restartAfterMs=0禁用开关重启。最终仍在检查则按retryBackoffMs重开上传页重试；红黄警告或未知结构仍停止。timeoutMs最大60分钟。",
+  "checks": { "timeoutMs": 1800000, "restartAfterMs": 900000 },
+  "_dom说明": "各国语言共用DOM识别，无需填写界面翻译。音乐和内容检查必须双绿，绝不超时放行。",
   "adspower": {
     "baseUrl": "http://local.adspower.net:50325",
     "apiKey": ""

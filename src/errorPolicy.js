@@ -46,6 +46,7 @@ const MISSING_HISTORY_TAG_PATTERNS = [/没找到历史话题.*的建议项/];
 // 明确认定为"临时抽风"的信号；除此之外没匹配上的未知错误也按临时处理
 // （因为发布前的所有步骤每轮都是从全新上传页重跑的，重试本身是安全的）。
 const TRANSIENT_PATTERNS = [
+  /审核等待超时（可重试）：/,
   /等待元素超时/,
   /Timeout .*exceeded/i,
   /TikTok页面自己崩溃/,

@@ -40,3 +40,13 @@ test('商品名称候选耗尽立即暂停，发布结果不确定仍优先保�
   assert.equal(classifyError(err).code, 'content_error');
   assert.equal(classifyError(err, { publishAttempted: true }).code, 'uncertain_publish');
 });
+
+test('明确待审核超时可重试，已尝试发布则仍需人工确认', () => {
+  const err = new Error('page.evaluate: Error: 审核等待超时（可重试）：尚未点击发布；music=success；content=checking');
+  assert.equal(classifyError(err).kind, 'transient');
+  assert.equal(classifyError(err).code, 'transient');
+  assert.equal(classifyError(err, { publishAttempted: true }).code, 'uncertain_publish');
+  for (const state of ['blocked', 'unknown', 'missing']) {
+    assert.equal(classifyError(new Error('发布安全检查未通过：content=' + state)).kind, 'never_retry');
+  }
+});

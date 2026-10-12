@@ -29,9 +29,12 @@ async function fixture(t, overrides = {}) {
     export const attempts = [];
     export let outcome = 'published';
     export function setOutcome(value) { outcome = value; }
-    export async function runOneUploadCycle({item, beforeUpload, beforePublishClick}) {
+    export let lastConfig;
+    export async function runOneUploadCycle({item, config, beforeUpload, beforePublishClick}) {
+      lastConfig = config;
       await beforeUpload();
       if (outcome === 'failure') throw new Error('fixture network failure');
+      if (outcome === 'checkTimeout') throw new Error('page.evaluate: Error: 审核等待超时（可重试）：music=success；content=checking');
       await beforePublishClick();
       attempts.push({...item});
       return {published: outcome === 'published'};
@@ -90,6 +93,27 @@ test('4 个产品各 3 条：连续三天每天各一条，扫描与删除已发
     assert.equal(f.state().items.length - f.state().doneIndex - 1, 12 - (d + 1) * 4);
   }
   assert.equal(new Set(f.upload.attempts.map(x => x.relativePath)).size, 12);
+});
+
+test('审核等待超时进入退避，不扣商品额度；重复失败达到上限才暂停', async t => {
+  const checks = { timeoutMs: 1800000, restartAfterMs: 900000 };
+  const f = await fixture(t, { retryBackoffMs: [1000], checks });
+  f.add('100.mp4');
+  f.upload.setOutcome('checkTimeout');
+  await f.tick();
+  assert.deepEqual(f.upload.lastConfig.checks, checks, '全局检查参数必须传进浏览器流程');
+  assert.equal(f.state().paused, false);
+  assert.equal(f.state().consecutiveFailures, 1);
+  assert.equal(f.state().pendingIndex, null);
+  assert.equal(f.state().publishedToday, 0);
+  assert.deepEqual(f.state().publishedProductIdsToday, []);
+  await f.tick();
+  assert.equal(f.opens(), 1, '退避期间不重新打开');
+  f.at(noon + 2000);
+  await f.tick();
+  assert.equal(f.opens(), 2);
+  assert.equal(f.state().pauseCode, 'retry_exhausted');
+  assert.equal(f.upload.attempts.length, 0, '从未进入发布');
 });
 
 test('剩余全是同产品则等待，不打开浏览器；加入其他产品可继续，不受另一账号影响', async t => {

@@ -53,7 +53,7 @@ const resultHtml = '<div class="status-wrapper">' +
   '<div class="status-result status-ready" data-show="false">任意语言</div>' +
   '<div class="status-result status-success" data-show="true"><span class="status-tip" style="color:var(--ui-text-success)">任意语言</span></div></div>';
 
-async function fresh() {
+async function fresh(checks) {
   await page.setContent('<style>:root{--ui-text-danger:red;--ui-text-success:green;--ui-text-warning:orange}' +
     '[data-show="false"]{display:none}.info-progress{height:4px}.collapsed+.options-form{display:none}' +
     '[role="dialog"]{position:fixed;inset:10px;background:white;border:1px solid}button{min-width:40px;min-height:25px}</style>' +
@@ -70,7 +70,7 @@ async function fresh() {
     window.postClicks = 0; window.aiConfirmed = false;
     document.querySelector('[data-e2e="post_video_button"]').onclick = () => { window.postClicks++; };
   });
-  await page.evaluate(installTkqInPage, { text: {}, hashtagKeywords: ['fyp', 'tiktok', 'tiktokshop'] });
+  await page.evaluate(installTkqInPage, { text: {}, hashtagKeywords: ['fyp', 'tiktok', 'tiktokshop'], checks });
 }
 
 async function setState(area, state) {
@@ -213,7 +213,8 @@ for (const [area, state] of [['music','warn'], ['content','warn'], ['music','che
   test(area + '=' + state + '，隐藏绿字不能放行', async () => {
     await fresh(); await setState(area, state);
     assert.equal(await page.evaluate(() => window.__tkq.getChecksState().passed), false);
-    await assert.rejects(page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe(50)), /发布安全检查未通过/);
+    await assert.rejects(page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe(50)),
+      state === 'warn' ? /发布安全检查未通过/ : /审核等待超时（可重试）/);
     await assert.rejects(page.evaluate(() => window.__tkq.clickPublishButton()), /发布安全检查未通过/);
     assert.equal(await page.evaluate(() => window.postClicks), 0);
   });
@@ -257,7 +258,7 @@ for (const variation of ['disabled', 'missing', 'ancestor-hidden', 'data-show-fa
 
 // 检查开关偶尔会莫名其妙是关着的(页面没渲染完就被读到、或者TikTok自己抽风)。
 // 这不是"内容没通过"，不该叫人来处理——自己把开关打开重跑一遍就行。
-// 但这里有条不能松的线：只做【打开】这一个方向，而且真的红/黄必须照样拦住。
+// 普通关闭只做打开；主动重启只用于长时间 pending，真的红/黄必须照样拦住。
 async function turnCheckOff(area, { stuck = false } = {}) {
   await page.evaluate(([area, stuck]) => {
     const root = document.querySelector(area === 'music' ? '.copyright-check' : '.content-check');
@@ -305,6 +306,120 @@ test('真的红色结果不会被当成开关问题放过', async () => {
     window.__tkq.waitForChecksPassAndAssertSafe(5000).then(() => 'PUBLISHED', (e) => e.message));
   assert.notEqual(result, 'PUBLISHED');
   assert.match(result, /发布安全检查未通过/, '内容判红必须走不可重试那条路');
+});
+
+async function stalledCheckFixture(outcome = 'success') {
+  await fresh({ timeoutMs: 12000, restartAfterMs: 100 });
+  await setState('content', 'checking');
+  await page.evaluate(outcome => {
+    window.checkClicks = { music: 0, content: 0 };
+    window.realCheckNow = Date.now;
+    for (const name of ['music', 'content']) {
+      const root = document.querySelector(name === 'music' ? '.copyright-check' : '.content-check');
+      const input = root.querySelector('input[role="switch"]');
+      input.onclick = () => {
+        window.checkClicks[name]++;
+        input.closest('[data-state]').dataset.state = input.checked ? 'checked' : 'unchecked';
+        if (!input.checked || name === 'music') return;
+        const show = state => root.querySelectorAll('.status-result').forEach(el => {
+          el.dataset.show = String(el.classList.contains('status-' + state));
+        });
+        // 真实重跑会重新进入 checking；旧绿残留的夹具故意不出现新 pending。
+        show(outcome === 'stale' ? 'success' : 'checking');
+        if (outcome === 'success' || outcome === 'warn') setTimeout(() => show(outcome), 500);
+        else setTimeout(() => { Date.now = () => window.realCheckNow() + 13000; }, 800);
+      };
+    }
+  }, outcome);
+}
+
+test('第二项卡住后只关闭再打开第二项，观察新检查并双绿稳定后通过', async () => {
+  await stalledCheckFixture();
+  assert.equal(await page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe()), true);
+  assert.deepEqual(await page.evaluate(() => window.checkClicks), { music: 0, content: 2 });
+  assert.equal(await page.evaluate(() => window.__tkq.getChecksState().passed), true);
+  assert.equal(await page.evaluate(() => window.postClicks), 0);
+});
+
+test('重启仍卡住：每项只重启一次，耗尽总等待后返回可重试错误', async () => {
+  await stalledCheckFixture('checking');
+  try {
+    await assert.rejects(page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe()), /审核等待超时（可重试）/);
+    assert.deepEqual(await page.evaluate(() => window.checkClicks), { music: 0, content: 2 });
+    assert.equal(await page.evaluate(() => window.postClicks), 0);
+  } finally { await page.evaluate(() => { Date.now = window.realCheckNow; }); }
+});
+
+test('重启后残留旧绿但没有新检查过程，不能放行', async () => {
+  await stalledCheckFixture('stale');
+  try {
+    await assert.rejects(page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe()), /未观察到新检查状态/);
+    assert.equal(await page.evaluate(() => window.postClicks), 0);
+  } finally { await page.evaluate(() => { Date.now = window.realCheckNow; }); }
+});
+
+test('重启后检查给出警告，仍按内容问题停止，不能再重启消除警告', async () => {
+  await stalledCheckFixture('warn');
+  await assert.rejects(page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe()), /发布安全检查未通过.*content=blocked/);
+  assert.deepEqual(await page.evaluate(() => window.checkClicks), { music: 0, content: 2 });
+  assert.equal(await page.evaluate(() => window.postClicks), 0);
+});
+
+test('检查开关被平台禁用时不强改，继续等待到可重试超时', async () => {
+  await stalledCheckFixture('checking');
+  await page.evaluate(() => {
+    document.querySelector('.content-check input').disabled = true;
+    setTimeout(() => { Date.now = () => window.realCheckNow() + 13000; }, 800);
+  });
+  try {
+    await assert.rejects(page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe()), /审核等待超时（可重试）/);
+    assert.deepEqual(await page.evaluate(() => window.checkClicks), { music: 0, content: 0 });
+    assert.equal(await page.evaluate(() => document.querySelector('.content-check input').checked), true);
+  } finally { await page.evaluate(() => { Date.now = window.realCheckNow; }); }
+});
+
+test('旧配置无需修改也等30分钟，11分钟不超时，禁用重启时不点击开关', async () => {
+  await fresh({ restartAfterMs: 0 });
+  await setState('content', 'checking');
+  const result = await page.evaluate(async () => {
+    const realNow = Date.now;
+    let offset = 0, settled = false, clicks = 0;
+    Date.now = () => realNow() + offset;
+    document.querySelector('.content-check input').onclick = () => clicks++;
+    const waiting = window.__tkq.waitForChecksPassAndAssertSafe().catch(e => e.message).finally(() => { settled = true; });
+    try {
+      offset = 11 * 60000;
+      await new Promise(r => setTimeout(r, 350));
+      const at11min = settled;
+      offset = 31 * 60000;
+      return { at11min, message: await waiting, clicks };
+    } finally { Date.now = realNow; }
+  });
+  assert.equal(result.at11min, false);
+  assert.match(result.message, /审核等待超时（可重试）/);
+  assert.equal(result.clicks, 0);
+});
+
+test('重启关闭后无法重新打开：停止等待并交给有界重试，不能发布', async () => {
+  await stalledCheckFixture();
+  await page.evaluate(() => {
+    const input = document.querySelector('.content-check input');
+    input.onclick = event => {
+      window.checkClicks.content++;
+      if (input.checked) event.preventDefault();
+      input.closest('[data-state]').dataset.state = 'unchecked';
+    };
+  });
+  await assert.rejects(page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe()), /版权检查开关处于关闭状态/);
+  assert.deepEqual(await page.evaluate(() => window.checkClicks), { music: 0, content: 2 });
+  assert.equal(await page.evaluate(() => window.postClicks), 0);
+});
+
+test('到达重启时机但已有红黄警告：任何检查开关都不能被重启', async () => {
+  await stalledCheckFixture();
+  await setState('music', 'warn');
+  await assert.rejects(page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe()), /music=blocked/);
+  assert.deepEqual(await page.evaluate(() => window.checkClicks), { music: 0, content: 0 });
 });
 
 // 上传等多久看的是【卡住没有】，不是【用了多久】。
