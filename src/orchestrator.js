@@ -133,7 +133,8 @@ async function processAccountOnce(account, settings, adapter, log, slot = null) 
   // 那些情况的处理办法就是"人去打开这个号看一眼"，窗口关了就没得看了。
   let publishConfirmed = false;
 
-  const { wsEndpoint } = await adapter.startProfile(account);
+  const { wsEndpoint, reused } = await adapter.startProfile(account);
+  if (reused) log.info('已复用本账号正在运行的浏览器环境，跳过重复启动');
   const browser = await chromium.connectOverCDP(wsEndpoint);
   try {
     const page = await findOrOpenStudioPage(browser);

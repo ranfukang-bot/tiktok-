@@ -422,6 +422,85 @@ test('到达重启时机但已有红黄警告：任何检查开关都不能被�
   assert.deepEqual(await page.evaluate(() => window.checkClicks), { music: 0, content: 0 });
 });
 
+async function realServiceErrorFixture() {
+  await fresh();
+  const html = readFileSync(new URL('./fixtures/content-check-service.html', import.meta.url), 'utf8');
+  await page.evaluate(html => {
+    const old = document.querySelector('.content-check__divider').nextElementSibling;
+    old.outerHTML = html;
+    const root = document.querySelector('.content-check__divider').nextElementSibling;
+    root.querySelectorAll('.status-result').forEach(el => { el.dataset.show = String(el.classList.contains('status-error')); });
+    window.serviceRetryClicks = 0;
+  }, html);
+}
+
+test('真实页面的红色服务错误与红色内容警告区分；点击重试后必须重新检查并双绿', async () => {
+  await realServiceErrorFixture();
+  assert.equal((await page.evaluate(() => window.__tkq.getChecksState())).checks[1].state, 'service_error');
+  await assert.rejects(page.evaluate(() => window.__tkq.assertChecksPassed()), /发布安全检查未通过/);
+  await page.evaluate(() => {
+    const root = document.querySelector('.content-check__divider').nextElementSibling;
+    const show = state => root.querySelectorAll('.status-result').forEach(el => { el.dataset.show = String(el.classList.contains('status-' + state)); });
+    root.querySelector('.status-error .text-link').onclick = () => {
+      window.serviceRetryClicks++;
+      show('checking');
+      setTimeout(() => show('success'), 600);
+    };
+  });
+  assert.equal(await page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe(5000)), true);
+  assert.equal(await page.evaluate(() => window.serviceRetryClicks), 1);
+  assert.equal(await page.evaluate(() => window.postClicks), 0);
+});
+
+test('真实服务错误反复出现，只点两次重试，随后退避而非误报内容违规', async () => {
+  await realServiceErrorFixture();
+  const result = await page.evaluate(async () => {
+    const realNow = Date.now;
+    let offset = 0;
+    Date.now = () => realNow() + offset;
+    const root = document.querySelector('.content-check__divider').nextElementSibling;
+    root.querySelector('.status-error .text-link').onclick = () => {
+      window.serviceRetryClicks++;
+      setTimeout(() => { offset += 6000; }, 20);
+    };
+    try { return await window.__tkq.waitForChecksPassAndAssertSafe().catch(e => e.message); }
+    finally { Date.now = realNow; }
+  });
+  assert.match(result, /审核服务暂时失败（可重试）/);
+  assert.equal(await page.evaluate(() => window.serviceRetryClicks), 2);
+  assert.equal(await page.evaluate(() => window.postClicks), 0);
+});
+
+for (const variant of ['warning', 'mixed', 'missing-link']) {
+  test('真实检查错误不能放宽内容风险或未知分支：' + variant, async () => {
+    await realServiceErrorFixture();
+    await page.evaluate(variant => {
+      const root = document.querySelector('.content-check__divider').nextElementSibling;
+      root.querySelector('.status-error .text-link').onclick = () => window.serviceRetryClicks++;
+      if (variant === 'missing-link') root.querySelector('.status-error .text-link').remove();
+      else {
+        root.querySelector('.status-warn').dataset.show = 'true';
+        if (variant === 'warning') root.querySelector('.status-error').dataset.show = 'false';
+      }
+    }, variant);
+    await assert.rejects(page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe(1000)), /发布安全检查未通过/);
+    assert.equal(await page.evaluate(() => window.serviceRetryClicks), 0);
+  });
+}
+
+test('浏览器不发送 console 日志也能取出检查进度，读取后不重复', async () => {
+  await fresh();
+  await page.evaluate(async () => {
+    const original = console.log;
+    console.log = () => {};
+    try { await window.__tkq.waitForChecksPassAndAssertSafe(2000); }
+    finally { console.log = original; }
+  });
+  const logs = await page.evaluate(() => window.__tkq.drainDiagnosticLogs());
+  assert.ok(logs.some(line => line.includes('两项检查均明确通过')));
+  assert.deepEqual(await page.evaluate(() => window.__tkq.drainDiagnosticLogs()), []);
+});
+
 // 上传等多久看的是【卡住没有】，不是【用了多久】。
 // 原来写死等 3 分钟：网速慢的时候视频还在传(进度条明明在涨)就被判"等待元素超时"，
 // 然后整轮重来——重来又得从头传一遍，网速慢的人永远发不出去。

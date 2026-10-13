@@ -11,7 +11,10 @@ export function installTkqInPage(config) {
   // 重装是安全的：函数体只声明闭包再赋值 window.__tkq，没有事件监听、没有定时器、
   // 不碰DOM，而且Node端的 page.evaluate 是串行的，不会有执行到一半的调用被打断。
 
+  const diagnosticLogs = [];
   function log(msg) {
+    diagnosticLogs.push(String(msg));
+    if (diagnosticLogs.length > 200) diagnosticLogs.shift();
     // eslint-disable-next-line no-console
     console.log('[TKQ] ' + msg);
   }
@@ -772,6 +775,14 @@ export function installTkqInPage(config) {
       danger: Boolean(el.querySelector('[style*="--ui-text-danger"], [color*="--ui-text-danger"]')),
       warning: Boolean(el.querySelector('[style*="--ui-text-warning"], [color*="--ui-text-warning"]')),
     }));
+    // 实际 content lite 页面：status-error + text-link 是“服务出错，重试”；
+    // status-warn 才是内容风险。两者都用红色，不能仅按颜色判违规。
+    // 仅认已观察到的单一错误分支；混合状态、其它检查或缺少重试入口仍拦截。
+    if (name === 'content' && active.length === 1 && result.matches('.status-error:not(.status-warn)') &&
+        !flags[0].warning && result.querySelectorAll('.status-tip .text-link').length === 1 &&
+        isVisible(result.querySelector('.status-tip .text-link'))) {
+      return { name, state: 'service_error', text };
+    }
     if (flags.some(({ el, danger, warning }) =>
       danger || warning || el.matches('.status-warn, .status-error'))) return { name, state: 'blocked', text };
     if (active.length !== 1) return { name, state: 'unknown', text };
@@ -854,6 +865,22 @@ export function installTkqInPage(config) {
     return true;
   }
 
+  async function retryCheckService(name) {
+    checkForAppCrash();
+    assertProductPickerClosed('重试检查服务');
+    const state = getChecksState();
+    if (state.checks.some(check => check.state === 'blocked')) {
+      throw new Error('发布安全检查未通过：' + checkSummary(state));
+    }
+    if (state.checks.find(check => check.name === name)?.state !== 'service_error') return false;
+    const root = getCheckRoots()[name];
+    const link = uniqueVisible(root, '.status-error .status-tip .text-link', '检查服务重试入口');
+    if (!link || !isEnabled(link)) return false;
+    log(`${name} 检查服务返回临时错误，点击该项“重试”，保留已上传视频`);
+    fireClick(link);
+    return true;
+  }
+
   function getPostButton() {
     return uniqueVisible(document, '[data-e2e="post_video_button"]', '最终发布按钮');
   }
@@ -875,6 +902,8 @@ export function installTkqInPage(config) {
     const enableTried = new Set(); // 每个开关只自动打开一次，避免跟页面来回拉锯
     const restartTried = new Set(); // 每项最多一次，不循环重置平台审核
     const awaitingFresh = new Set(); // 重启后不能把残留的旧绿色当作新结果
+    const serviceRetries = new Map();
+    const nextServiceRetryAt = new Map();
     while (Date.now() < deadline) {
       checkForAppCrash();
       assertProductPickerClosed('等待发布前检查');
@@ -892,6 +921,24 @@ export function installTkqInPage(config) {
       }
       for (const check of state.checks) {
         if (['ready', 'checking'].includes(check.state)) awaitingFresh.delete(check.name);
+      }
+      const serviceError = state.checks.find(check => check.state === 'service_error');
+      if (serviceError) {
+        passedSince = null;
+        if (state.checks.some(check => !['success', 'ready', 'checking', 'service_error'].includes(check.state))) {
+          throw new Error('发布安全检查未通过：检查结构异常；' + checkSummary(state));
+        }
+        if (Date.now() >= (nextServiceRetryAt.get(serviceError.name) || 0)) {
+          const attempts = serviceRetries.get(serviceError.name) || 0;
+          if (attempts >= 2 || !await retryCheckService(serviceError.name)) {
+            throw new Error('审核服务暂时失败（可重试）：页面内重试未恢复，尚未点击发布；' + checkSummary(state));
+          }
+          serviceRetries.set(serviceError.name, attempts + 1);
+          nextServiceRetryAt.set(serviceError.name, Date.now() + 5000);
+          awaitingFresh.add(serviceError.name);
+        }
+        await sleep(250);
+        continue;
       }
 
       // 开关被关掉是另一回事：不是内容有问题，是这项检查压根没跑。
@@ -942,6 +989,10 @@ export function installTkqInPage(config) {
     }
     const finalState = getChecksState();
     const summary = checkSummary(finalState);
+    if (finalState.checks.every(check => ['success', 'ready', 'checking', 'service_error'].includes(check.state)) &&
+        finalState.checks.some(check => check.state === 'service_error')) {
+      throw new Error('审核服务暂时失败（可重试）：达到本轮等待上限，尚未点击发布；' + summary);
+    }
     // 只有明确的“尚在等待”才自动重试；未知结构、红黄和残留旧绿仍然停下。
     if (finalState.checks.every(check => ['success', 'ready', 'checking'].includes(check.state)) &&
         finalState.checks.some(check => ['ready', 'checking'].includes(check.state))) {
@@ -1025,6 +1076,7 @@ export function installTkqInPage(config) {
 
   window.__tkq = {
     log,
+    drainDiagnosticLogs: () => diagnosticLogs.splice(0),
     checkForAppCrash,
     assertProductPickerClosed,
     isUploadPage,

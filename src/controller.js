@@ -123,7 +123,7 @@ export function getStatus() {
   } catch (err) {
     settingsError = err.message;
   }
-  return { running, lastTickAt, lastTickError, settingsError, accounts, slotCompletionPolicy: 'finish-started-upload', schedulerPolicy: 'single-flight-v1', uploadSelectionPolicy: 'verify-receipt-on-timeout-v2-90s' };
+  return { running, lastTickAt, lastTickError, settingsError, accounts, slotCompletionPolicy: 'finish-started-upload', schedulerPolicy: 'single-flight-v1', uploadSelectionPolicy: 'verify-receipt-on-timeout-v2-90s', checksRecoveryPolicy: 'service-error-retry-v2', pageLogPolicy: 'polled-buffer-v1' };
 }
 
 export async function resolveUncertain(accountName, decision) {

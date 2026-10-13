@@ -42,13 +42,57 @@ function humanDelay(minMs = 800, maxMs = 2200) {
 function installAndBridgeLogs(page, log) {
   if (page.__tkqListenersInstalled) return;
   page.__tkqListenersInstalled = true;
-  page.on('console', (msg) => {
-    const text = msg.text();
-    if (text.startsWith('[TKQ]')) log.info(text.slice(5).trim());
-  });
+  // 部分指纹浏览器不发送 console 事件，日志改由 withPageLogs 主动读取。
   // 上一条如果是中途失败退出的，页面可能停在"要不要放弃未发布的草稿"这类确认框上；
   // 下面的强制刷新会撞上它，不自动接受的话 goto 会一直卡住。
   page.on('dialog', (dialog) => dialog.accept().catch(() => {}));
+}
+
+export async function withPageLogs(page, log, work) {
+  let inFlight = null;
+  const flush = () => {
+    if (inFlight) return inFlight;
+    inFlight = page.evaluate(() => window.__tkq?.drainDiagnosticLogs?.() || []).then(entries => {
+      if (Array.isArray(entries)) for (const entry of entries) log.info(entry);
+    }).catch(() => { /* 导航/关闭页面不能改变发布结果 */ }).finally(() => { inFlight = null; });
+    return inFlight;
+  };
+  const timer = setInterval(flush, 1000);
+  timer.unref?.();
+  try { return await work(); }
+  finally {
+    clearInterval(timer);
+    let endTimer;
+    try { await Promise.race([flush(), new Promise(resolve => { endTimer = setTimeout(resolve, 1000); })]); }
+    finally { clearTimeout(endTimer); }
+  }
+}
+
+// 此处尚未选文件；允许一次重新加载，不能把后续上传/发布放进这个重试循环。
+export async function waitForVideoInput(page, log) {
+  const input = page.locator('input[type="file"][accept="video/*"]').first();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await input.waitFor({ state: 'attached', timeout: 90000 });
+      return input;
+    } catch (err) {
+      if (err.name !== 'TimeoutError') throw err;
+      const view = await page.evaluate(() => ({
+        path: location.pathname, title: document.title,
+        hasVideo: Boolean(document.querySelector('video, [data-e2e="video_preview"], [data-e2e="upload_status_container"]')),
+        inputs: Array.from(document.querySelectorAll('input[type="file"]')).map(el => el.accept),
+      })).catch(() => null);
+      if (view?.path && !view.path.includes('/tiktokstudio/upload')) {
+        throw new Error(`上传页尚未就绪：当前路径 ${view.path}，请检查登录或验证页面；尚未选择视频`);
+      }
+      if (!attempt && view && !view.hasVideo && view.inputs.length === 0) {
+        log.warn('上传页90秒仍未出现选文件控件；尚未选择视频，重新加载一次');
+        await page.goto(UPLOAD_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        continue;
+      }
+      throw new Error(`上传页选文件控件未就绪：${JSON.stringify(view)}；尚未选择视频，未重复上传。${err.message}`);
+    }
+  }
 }
 
 // 文案/话题标签：只走"点历史标签面板里的chip"这一条路径。
@@ -163,14 +207,18 @@ async function ensureOnUploadPage(page, log) {
 // Node进程如果这时候崩了也能在重启后知道"上一条点了发布但结果没确认"，需要人工核实。
 export async function runOneUploadCycle({ page, account, item, config, log, beforeUpload, beforePublishClick }) {
   installAndBridgeLogs(page, log);
+  return withPageLogs(page, log, () => performUploadCycle({ page, account, item, config, log, beforeUpload, beforePublishClick }));
+}
+
+async function performUploadCycle({ page, account, item, config, log, beforeUpload, beforePublishClick }) {
   await ensureOnUploadPage(page, log);
-  await page.evaluate(installTkqInPage, config);
 
   const absolutePath = resolveItemPath(account.videoFolder, item);
   log.info(`开始处理: ${item.relativePath} -> 商品ID ${item.productId}`);
 
-  const fileInput = page.locator('input[type="file"][accept="video/*"]').first();
-  await fileInput.waitFor({ state: 'attached', timeout: 30000 });
+  const fileInput = await waitForVideoInput(page, log);
+  // 等待控件期间可能重新加载过页面，确认就绪后再安装助手。
+  await page.evaluate(installTkqInPage, config);
   // 时间节点限制的是开始上传，不是完成时间；放行后仍必须经过后面的全部安全检查。
   if (beforeUpload) await beforeUpload();
   await selectVideoFile({ page, fileInput, absolutePath, filename: item.filename, log });
@@ -191,6 +239,7 @@ export async function runOneUploadCycle({ page, account, item, config, log, befo
   await page.evaluate(() => window.__tkq.setPublishNow());
 
   await humanDelay();
+  log.info('进入音乐版权/内容检查，等待两项明确通过');
   await page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe());
 
   // 点击发布前先让调用方把 pendingIndex 落盘：点击后页面可能立刻跳转，

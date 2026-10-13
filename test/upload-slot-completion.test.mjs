@@ -29,6 +29,7 @@ async function cycle({ expiredBeforeUpload = false, unsafe = false, uncertain = 
       if (code.includes('document.querySelector')) return true;
       const name = /window\.__tkq\??\.(\w+)/.exec(code)?.[1];
       assert.ok(name, `未识别的页面调用：${code}`);
+      if (name === 'drainDiagnosticLogs') return [];
       events.push(name);
       if (name === 'hasAcceptedUpload') {
         if (receiptFails) throw new Error('页面丢失');
