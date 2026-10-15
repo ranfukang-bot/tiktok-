@@ -7,9 +7,14 @@ export function createAdsPowerAdapter(settings) {
     const url = new URL(baseUrl + pathname);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
     if (settings.apiKey) url.searchParams.set('api_key', settings.apiKey);
-    const res = await fetch(url, { method: 'GET' });
-    if (!res.ok) throw new Error(`AdsPower接口 ${pathname} HTTP ${res.status}`);
-    const json = await res.json();
+    let json;
+    try {
+      const res = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(120000) });
+      if (!res.ok) throw new Error(`AdsPower接口 ${pathname} HTTP ${res.status}`);
+      json = await res.json();
+    } catch (err) {
+      throw new Error(`连不上 AdsPower 指纹浏览器客户端或响应异常（最多等待120秒），请检查客户端和本地API：${err.message}`, { cause: err });
+    }
     if (json.code !== 0) {
       throw new Error(`AdsPower接口 ${pathname} 返回错误: ${json.msg || JSON.stringify(json)}`);
     }

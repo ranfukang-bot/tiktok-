@@ -1,11 +1,11 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_DIR = path.join(__dirname, '..', 'state');
 
-function slug(accountName) {
+export function slug(accountName) {
   return accountName.replace(/[^a-zA-Z0-9_\-一-龥]/g, '_');
 }
 
@@ -95,4 +95,55 @@ export function clearFailures(accountName) {
   state.notifiedForPause = false;
   setState(accountName, state);
   return state;
+}
+
+// Windows 文件名不区分大小写；所有账号必须映射到不同的状态文件。
+export function validateAccountNames(accounts) {
+  const seen = new Map();
+  for (const account of accounts) {
+    const key = slug(account.name).toLowerCase();
+    if (seen.has(key)) throw new Error(`账号名称对应同一个状态文件："${seen.get(key)}" 和 "${account.name}"，请换一个名称`);
+    if (['joblist', 'product-verdicts'].includes(key)) throw new Error(`账号名称 "${account.name}" 与系统状态文件重名，请换一个名称`);
+    seen.set(key, account.name);
+  }
+}
+
+// 同步校验及迁移，中间不让出事件循环，避免检查通过后又开始处理旧账号。
+// 先完整预检，再移动文件；品单或配置保存失败时把已移动的文件恢复。
+export function renameAccountStates(renames, { isProcessing, commit }) {
+  const moves = renames.map(({ from, to }) => {
+    const state = getState(from);
+    if (isProcessing(from) || isProcessing(to) || state.pendingIndex != null || state.pauseCode === 'uncertain_publish') {
+      throw new Error(`账号 "${from}" 正在处理或发布结果尚未确认，请先处理完再改名`);
+    }
+    const source = statePath(from), target = statePath(to);
+    const sameFile = source.toLowerCase() === target.toLowerCase();
+    if (!sameFile && existsSync(target)) throw new Error(`新名称 "${to}" 已有状态文件，不能覆盖，请换一个名称`);
+    return { source, target, sameFile };
+  });
+  const joblistPath = path.join(STATE_DIR, 'joblist.json');
+  const originalJoblist = renames.length && existsSync(joblistPath) ? readFileSync(joblistPath, 'utf8') : null;
+  let updatedJoblist;
+  if (originalJoblist !== null) {
+    updatedJoblist = JSON.parse(originalJoblist);
+    const items = Array.isArray(updatedJoblist) ? updatedJoblist : updatedJoblist.items;
+    if (!Array.isArray(items)) throw new Error('品单格式不对，无法安全更新改名引用');
+    const mapping = new Map(renames.map(({ from, to }) => [from, to]));
+    for (const item of items) if (mapping.has(item.account)) item.account = mapping.get(item.account);
+  }
+  const moved = [];
+  try {
+    for (const move of moves) {
+      if (existsSync(move.source) && move.source !== move.target) {
+        renameSync(move.source, move.target);
+        moved.push(move);
+      }
+    }
+    if (originalJoblist !== null) writeFileSync(joblistPath, JSON.stringify(updatedJoblist, null, 2));
+    commit();
+  } catch (err) {
+    for (const move of moved.reverse()) renameSync(move.target, move.source);
+    if (originalJoblist !== null) writeFileSync(joblistPath, originalJoblist);
+    throw err;
+  }
 }

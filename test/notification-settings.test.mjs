@@ -63,10 +63,12 @@ test('notification settings preserve Bark, save PushPlus and report acceptance h
     for (const rejected of [false, true]) {
       rejectTest = rejected;
       const dialogPromise = page.waitForEvent('dialog');
-      await page.locator('#btn-test-notify').click();
+      // 弹窗可能阻塞 click 的完成，先接收并关闭弹窗，再等待点击结束。
+      const clickPromise = page.locator('#btn-test-notify').click();
       const dialog = await dialogPromise;
       assert.match(dialog.message(), rejected ? /发送失败.*需要实名/ : /受理不代表送达/);
       await dialog.accept();
+      await clickPromise;
       await page.waitForFunction(() => !document.getElementById('btn-test-notify').disabled);
     }
     assert.deepEqual(errors, []);

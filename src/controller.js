@@ -51,7 +51,12 @@ export function start() {
 
 export function stop() {
   running = false;
-  runGeneration += 1; // 当前批次可收尾，但旧一轮不能继续启动后面的账号。
+  runGeneration += 1; // 当前账号可收尾，但旧一轮不能继续启动后面的账号。
+}
+
+// 配置保存后丢弃旧扫描中的候选账号，下一圈重新加载；已运行任务仍可收尾。
+export function invalidateSchedule() {
+  runGeneration += 1;
 }
 
 export function isRunning() {
@@ -117,6 +122,7 @@ export function getStatus() {
         scheduleMode: plan.mode,
         slotsUsedToday: slotsUsed,
         slotsTotal,
+        missedSlotsToday: state.missedSlotsDayKey === currentDayKey(timezone) ? (state.missedSlotsToday || []).length : 0,
       };
     });
     void settings;

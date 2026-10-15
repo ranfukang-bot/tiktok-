@@ -31,7 +31,7 @@ export function loadSettings() {
   if (!settings.minIntervalMs || !settings.maxIntervalMs) {
     throw new Error('settings.json 里必须配置 minIntervalMs / maxIntervalMs');
   }
-  return settings;
+  return { cycleAlertMs: 90 * 60 * 1000, ...settings };
 }
 
 export function saveSettings(settings) {

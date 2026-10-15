@@ -933,8 +933,9 @@ test('真实控制台JS：无需语言字段保存账号，且保留旧配置（
   await page.locator('#a-phone-group').fill('印尼1号手机');
   await page.locator('#account-form button[type=submit]').click();
   await page.waitForFunction(() => document.querySelector('#account-modal').classList.contains('hidden'));
-  assert.equal(saved[0].name, 'fixture-edited');
-  assert.equal(saved[0].phoneGroup, '印尼1号手机');
+  assert.deepEqual(saved.renames, [{ from: 'fixture', to: 'fixture-edited' }]);
+  assert.equal(saved.accounts[0].name, 'fixture-edited');
+  assert.equal(saved.accounts[0].phoneGroup, '印尼1号手机');
   assert.match(await page.locator('.phone-group summary').innerText(), /印尼1号手机/);
   await page.evaluate(() => openAccountModal(0));
   assert.equal(await page.locator('#a-phone-group').inputValue(), '印尼1号手机');
@@ -945,10 +946,10 @@ test('真实控制台JS：无需语言字段保存账号，且保留旧配置（
   });
   assert.equal(await page.locator('.phone-group').count(), 2);
   assert.match(await page.locator('.phone-group summary').last().innerText(), /未分组/);
-  assert.equal(saved[0].enabled, false);
-  assert.equal(saved[0].dailyPublishLimit, 7);
-  assert.deepEqual(saved[0].textOverrides, existing.textOverrides);
-  assert.equal(saved[0].textPreset, 'custom');
+  assert.equal(saved.accounts[0].enabled, false);
+  assert.equal(saved.accounts[0].dailyPublishLimit, 7);
+  assert.deepEqual(saved.accounts[0].textOverrides, existing.textOverrides);
+  assert.equal(saved.accounts[0].textPreset, 'custom');
 });
 
 test('真实控制台JS：发布时间节点能改能存，配错了当场拦住（模拟API，不写用户数据）', async () => {

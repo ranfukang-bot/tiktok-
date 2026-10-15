@@ -17,8 +17,8 @@ async function api(method, url, body) {
 // 保存账号列表。服务端对"这次没改动、但配置不合格"的老账号只发 warning 不拦截
 // （否则一个坏账号会把人锁死，连修它删它都做不了），所以这些 warning 必须显示出来，
 // 不然用户要等到那个账号真的跑不动了才知道。
-async function putAccounts(next) {
-  const res = await api('PUT', '/api/accounts', next);
+async function putAccounts(next, renames = []) {
+  const res = await api('PUT', '/api/accounts', { accounts: next, renames });
   const warnings = (res && res.warnings) || [];
   showAccountWarnings(warnings);
   return res;
@@ -162,7 +162,7 @@ function renderAccounts() {
     } else if (runtime.inPostingWindow === false) {
       const wait = runtime.nextWindowStart ? fmtRemaining(runtime.nextWindowStart - Date.now()) : '';
       if (runtime.scheduleMode === 'slots') {
-        const tip = `今天的发布节点用掉 ${runtime.slotsUsedToday}/${runtime.slotsTotal} 个。错过的节点不补发。`;
+        const tip = `今天的发布节点用掉 ${runtime.slotsUsedToday}/${runtime.slotsTotal} 个，今天错过 ${runtime.missedSlotsToday || 0} 个。错过的节点不补发。`;
         stateHtml = `<span class="state off" title="${escapeAttr(tip)}">等下一个时间节点${wait ? '，还要等 ' + wait : ''}</span>`;
       } else {
         stateHtml = `<span class="state off" title="只在设置里指定的时间段内发布">未到发布时段${wait ? '，还要等 ' + wait : ''}</span>`;
@@ -214,6 +214,7 @@ function renderAccounts() {
       <div class="ac-meta">
         ${progressHtml}
         ${quotaBadge}
+        ${runtime && runtime.scheduleMode === 'slots' ? `<span class="tag">今日错过 ${runtime.missedSlotsToday || 0} 个节点</span>` : ''}
       </div>
       <div class="ac-path" title="${escapeAttr(account.videoFolder)}">${escapeHtml(account.videoFolder)}</div>
       <div class="actions">${actions.join('')}</div>
@@ -415,7 +416,8 @@ accountForm.addEventListener('submit', async (e) => {
   }
 
   try {
-    await putAccounts(next);
+    const renames = previous && originalName !== account.name ? [{ from: originalName, to: account.name }] : [];
+    await putAccounts(next, renames);
     accountsConfig = next;
     closeAccountModal();
     renderAccounts();

@@ -3,6 +3,8 @@
   "minIntervalMs": 5400000,
   "maxIntervalMs": 9000000,
   "folderScanIntervalMs": 30000,
+  "cycleAlertMs": 5400000,
+  "_cycleAlertMs说明": "单账号一轮运行超过此时间就提醒一次，默认90分钟；只提醒，不中断、不重试、不关窗口。推送需启用通知渠道。",
   "concurrency": 1,
   "videoExtensions": [
     ".mp4",

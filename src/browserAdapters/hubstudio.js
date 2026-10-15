@@ -19,9 +19,14 @@ export function createHubstudioAdapter(settings) {
       'Accept-Language': 'zh-CN',
       Authorization: settings.apiKey || 'NULL',
     };
-    const res = await fetch(baseUrl + pathname, { method: 'POST', headers, body: JSON.stringify(body) });
-    if (!res.ok) throw new Error(`Hubstudio接口 ${pathname} HTTP ${res.status}`);
-    const json = await res.json();
+    let json;
+    try {
+      const res = await fetch(baseUrl + pathname, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(120000) });
+      if (!res.ok) throw new Error(`Hubstudio接口 ${pathname} HTTP ${res.status}`);
+      json = await res.json();
+    } catch (err) {
+      throw new Error(`连不上 Hubstudio 指纹浏览器客户端或响应异常（最多等待120秒），请检查客户端和本地API：${err.message}`, { cause: err });
+    }
     if (json.code !== undefined && json.code !== 0) {
       throw new Error(`Hubstudio接口 ${pathname} 返回错误: ${json.msg || json.message || JSON.stringify(json)}`);
     }

@@ -16,6 +16,8 @@ import {
   resolvePostingPlan,
 } from './config.js';
 import * as controller from './controller.js';
+import { isAccountProcessing } from './orchestrator.js';
+import { validateAccountNames, renameAccountStates } from './stateStore.js';
 import { recentLogs, subscribe } from './logBus.js';
 import { createAdapter } from './browserAdapters/index.js';
 import { sendTestNotification } from './notifier.js';
@@ -28,6 +30,17 @@ const PORT = Number(process.env.PORT) || 8765;
 ensureConfigFiles();
 
 const app = express();
+const localHosts = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`]);
+const localOrigins = new Set([...localHosts].map(host => `http://${host}`));
+app.use((req, res, next) => {
+  if (!localHosts.has(req.headers.host)) {
+    return res.status(403).json({ error: '控制台只允许本机地址访问' });
+  }
+  if (req.method !== 'GET' && req.headers.origin !== undefined && !localOrigins.has(req.headers.origin)) {
+    return res.status(403).json({ error: '控制台拒绝来自非本机页面的操作' });
+  }
+  next();
+});
 // 选品表格用 base64 放在 JSON 里传，默认 100kb 不够，放宽到 2mb
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
@@ -102,7 +115,7 @@ app.get('/api/accounts', (req, res) => {
 
 app.put('/api/accounts', (req, res) => {
   try {
-    const accounts = req.body;
+    const accounts = Array.isArray(req.body) ? req.body : req.body?.accounts;
     if (!Array.isArray(accounts)) throw new Error('账号列表格式不对');
 
     const names = new Set();
@@ -117,7 +130,31 @@ app.put('/api/accounts', (req, res) => {
       if (account.browser === 'bitbrowser' && !account.browserId) throw new Error(`账号 "${account.name}" 是比特浏览器但没填环境ID`);
     }
 
-    saveAccounts(accounts);
+    validateAccountNames(accounts);
+    const previous = loadAllAccounts();
+    const oldNames = new Set(previous.map(a => a.name));
+    const removed = new Set(previous.filter(a => !names.has(a.name)).map(a => a.name));
+    const added = new Set(accounts.filter(a => !oldNames.has(a.name)).map(a => a.name));
+    const renames = Array.isArray(req.body) ? [] : (req.body.renames || []);
+    if (!Array.isArray(renames)) throw new Error('改名信息格式不对');
+    for (const rename of renames) {
+      if (!rename || !removed.has(rename.from) || !added.has(rename.to)) {
+        throw new Error('改名信息与账号列表不一致，请刷新后重试；新名称不能占用已有账号');
+      }
+      removed.delete(rename.from);
+      added.delete(rename.to);
+    }
+    // 兼容旧客户端的单次改名，也不能靠不传 renames 绕过待确认保护。
+    if (removed.size === 1 && added.size === 1) {
+      renames.push({ from: [...removed][0], to: [...added][0] });
+      removed.clear(); added.clear();
+    }
+    if (removed.size && added.size) throw new Error('无法确定多个账号的改名对应关系，请提供原名和新名');
+    renameAccountStates(renames, { isProcessing: isAccountProcessing, commit: () => {
+      try { saveAccounts(accounts); }
+      catch (err) { saveAccounts(previous); throw err; }
+    } });
+    controller.invalidateSchedule();
     res.json({ ok: true, warnings });
   } catch (err) {
     handleError(res, err);
@@ -311,7 +348,7 @@ app.get('/api/logs/stream', (req, res) => {
   req.on('close', unsubscribe);
 });
 
-const server = app.listen(PORT, () => {
+export const server = app.listen(PORT, '127.0.0.1', () => {
   const url = `http://127.0.0.1:${PORT}`;
   console.log(`TikTok 批量发布控制台已启动: ${url}`);
   open(url).catch(() => {

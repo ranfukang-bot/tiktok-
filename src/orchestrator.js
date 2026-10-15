@@ -15,6 +15,7 @@ import { scanDirectory, syncFilesIntoQueue, deletePublishedFile } from './folder
 import { runOneUploadCycle } from './browser/tiktokStudio.js';
 import { classifyError, retryDelayMs, maxRetries } from './errorPolicy.js';
 import { notify } from './notifier.js';
+import { watchForStall, DEFAULT_CYCLE_ALERT_MS, SCHEDULER_ALERT_MS } from './stallAlert.js';
 import { routeInbox } from './inbox.js';
 import { loadJoblist } from './joblist.js';
 import {
@@ -23,6 +24,7 @@ import {
   isWithinPostingWindow,
   currentDayKey,
   evaluateSlots,
+  slotTargetsForDay,
   assertSlotCanStartUpload,
   recordConfirmedQuota,
   nextPublishableIndex,
@@ -38,6 +40,7 @@ function randomInterval(min, max) {
 }
 
 const processingAccounts = new Set();
+const activeSlots = new Map();
 export function isAccountProcessing(name) {
   return processingAccounts.has(name);
 }
@@ -251,11 +254,17 @@ async function processAccountOnce(account, settings, adapter, log, slot = null) 
   }
 }
 
-async function tickAccount(settings, account, adapters) {
+async function tickAccount(settings, account, adapters, { folderSynced = false } = {}) {
   // 必须在第一个 await（扫目录）之前占用，且覆盖错误分类、通知、收尾。
   if (processingAccounts.has(account.name)) return;
   processingAccounts.add(account.name);
   const log = createLogger(account.name);
+  const alertMs = Number.isFinite(settings.cycleAlertMs) && settings.cycleAlertMs > 0
+    ? settings.cycleAlertMs : DEFAULT_CYCLE_ALERT_MS;
+  const cycleWatchdog = watchForStall(settings, {
+    delayMs: alertMs, account: account.name,
+    text: `账号${account.name}这一轮已运行超过${fmtMinutes(alertMs)}分钟，可能卡住，请打开窗口看一眼`,
+  }, log);
   try {
     const state = getState(account.name);
     if (state.paused) return;
@@ -272,7 +281,7 @@ async function tickAccount(settings, account, adapters) {
     // "界面上显示文件夹里还有几条"也一起冻住。节点模式一天只开四个一小时的窗口，
     // 放在闸门后面的话，你下午三点丢进去的视频要等到 16:30 才会在界面上出现，
     // 看着像程序坏了。这一步只是读一下本地目录，很便宜。
-    if (!Number.isInteger(state.pendingIndex)) {
+    if (!folderSynced && !Number.isInteger(state.pendingIndex)) {
       await syncAccountFolder(account, settings, log, { quiet: true });
     }
 
@@ -314,6 +323,7 @@ async function tickAccount(settings, account, adapters) {
     if (plan.mode === 'window' && Date.now() < fresh.nextTime) return;
 
     const adapter = adapters.get(account.browser);
+    if (slot) activeSlots.set(account.name, slot);
     await processAccountOnce(account, settings, adapter, log, slot);
   } catch (err) {
     // 开浏览器/等页面时过点、尚未上传：不计失败，留到下一节点；已上传的不走此分支。
@@ -327,6 +337,8 @@ async function tickAccount(settings, account, adapters) {
     }
     await handleAccountError(account, settings, err, log);
   } finally {
+    cycleWatchdog.stop();
+    activeSlots.delete(account.name);
     processingAccounts.delete(account.name);
   }
 }
@@ -405,15 +417,103 @@ async function runInbox(settings, accounts) {
   }
 }
 
-// 账号分组后组内并发跑，组间顺序跑，避免同一时刻启动过多指纹浏览器窗口。
-export async function tickAll(settings, accounts, { shouldContinue = () => true } = {}) {
+// 只记录到期时的可发状态，检查过的节点不因后来补视频或恢复账号而倒算。
+function recordMissedSlots(account, settings, state, log) {
+  const timezone = resolveTimezone(settings, account);
+  const dayKey = currentDayKey(timezone);
+  if (state.missedSlotsDayKey !== dayKey) {
+    state.missedSlotsDayKey = dayKey;
+    state.missedSlotsToday = [];
+    state.slotObservations = {};
+  }
+  const plan = resolvePostingPlan(settings);
+  if (plan.mode !== 'slots') return;
+  const eligible = !state.paused && hasQuotaRemaining(state, resolveDailyLimit(settings, account)) &&
+    nextPublishableIndex(state, timezone) >= 0;
+  for (const slot of slotTargetsForDay({ dayKey, timezone, slots: plan.slots, accountName: account.name })) {
+    const previous = state.slotObservations[slot.key];
+    if (previous?.checked) continue;
+    if (Date.now() < slot.endMs) {
+      state.slotObservations[slot.key] = { eligible };
+      continue;
+    }
+    // 仍在处理的账号由下一圈检查；待人工确认的原节点也不能提前认定错过。
+    const active = activeSlots.get(account.name);
+    if (active?.dayKey === dayKey && active.key === slot.key) continue;
+    if (state.pendingSlot?.dayKey === dayKey && state.pendingSlot.key === slot.key) continue;
+    state.slotObservations[slot.key] = { checked: true };
+    if (!state.slotsUsedToday.includes(slot.key) && (previous?.eligible ?? eligible)) {
+      state.missedSlotsToday.push(slot.key);
+      log.warn(`错过节点 ${slot.start}-${slot.end}：当时未暂停且有可发视频，今天不补发`);
+    }
+  }
+}
+
+// 扫描只负责发现任务、填充空闲并发位；浏览器工作独立收尾，不阻塞下一圈。
+export async function tickAll(settings, accounts, options = {}) {
+  const watchdog = watchForStall(settings, {
+    delayMs: SCHEDULER_ALERT_MS,
+    text: '调度循环超过30分钟没有跑完一圈，可能卡住，请打开控制台看一眼',
+  }, createLogger('调度器'));
+  try {
+    await scanAndDispatch(settings, accounts, options);
+  } finally {
+    watchdog.stop();
+  }
+}
+
+async function scanAndDispatch(settings, accounts, { shouldContinue = () => true } = {}) {
+  if (!shouldContinue()) return;
   await runInbox(settings, accounts);
   const adapters = buildAdapters(settings, accounts);
-  const concurrency = settings.concurrency || 1;
-  for (let i = 0; i < accounts.length; i += concurrency) {
-    if (!shouldContinue()) break;
-    const batch = accounts.slice(i, i + concurrency);
-    await tick(settings, batch, adapters);
+  const candidates = [];
+  for (const account of accounts) {
+    if (!shouldContinue()) return;
+    if (processingAccounts.has(account.name)) {
+      const state = getState(account.name);
+      recordMissedSlots(account, settings, state, createLogger(account.name));
+      setState(account.name, state);
+      continue;
+    }
+    const log = createLogger(account.name);
+    // 扫描期间也持有单账号锁，避免手动扫描/其它入口覆盖状态。
+    processingAccounts.add(account.name);
+    try {
+      let state = getState(account.name);
+      const timezone = resolveTimezone(settings, account);
+      rolloverIfNewDay(state, timezone);
+      setState(account.name, state);
+      if (!Number.isInteger(state.pendingIndex)) {
+        await syncAccountFolder(account, settings, log, { quiet: true });
+      }
+      state = getState(account.name);
+      recordMissedSlots(account, settings, state, log);
+      setState(account.name, state);
+      if (state.paused || state.pendingIndex != null || Date.now() < state.retryAt ||
+          !hasQuotaRemaining(state, resolveDailyLimit(settings, account)) ||
+          nextPublishableIndex(state, timezone) < 0) continue;
+      const plan = resolvePostingPlan(settings);
+      if (plan.mode === 'slots') {
+        const { due } = evaluateSlots({ nowMs: Date.now(), timezone, dayKey: currentDayKey(timezone),
+          slots: plan.slots, accountName: account.name, usedKeys: state.slotsUsedToday });
+        if (due) candidates.push({ account, endMs: due.endMs });
+      } else if (Date.now() >= state.nextTime && isWithinPostingWindow(Date.now(), timezone, plan.window)) {
+        candidates.push({ account, endMs: Infinity });
+      }
+    } catch (err) {
+      await handleAccountError(account, settings, err, log);
+    } finally {
+      processingAccounts.delete(account.name);
+    }
+  }
+  candidates.sort((a, b) => a.endMs - b.endMs);
+  const concurrency = Math.max(1, Math.floor(Number(settings.concurrency) || 1));
+  for (const { account } of candidates) {
+    if (!shouldContinue() || processingAccounts.size >= concurrency) break;
+    // tickAccount 在第一个 await 前占锁。异常兜底，后台任务不能产生未处理拒绝。
+    void tickAccount(settings, account, adapters, { folderSynced: true }).catch(err => {
+      createLogger(account.name).error(`账号处理收尾失败：${err.message}`);
+    });
   }
 }
 
