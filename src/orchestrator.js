@@ -483,7 +483,10 @@ async function scanAndDispatch(settings, accounts, { shouldContinue = () => true
       const timezone = resolveTimezone(settings, account);
       rolloverIfNewDay(state, timezone);
       setState(account.name, state);
-      if (!Number.isInteger(state.pendingIndex)) {
+      // 与旧版 tickAccount 一致：已暂停、或正在等失败退避的账号不碰文件夹。
+      // 否则人工暂停的账号文件夹不存在时，每一圈都会报错并重复"暂停"。
+      const waiting = state.paused || (Number.isFinite(state.retryAt) && Date.now() < state.retryAt);
+      if (!waiting && !Number.isInteger(state.pendingIndex)) {
         await syncAccountFolder(account, settings, log, { quiet: true });
       }
       state = getState(account.name);
