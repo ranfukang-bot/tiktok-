@@ -100,6 +100,19 @@ export async function syncAccountFolder(account, settings, log, { quiet = false 
   return result;
 }
 
+// 指纹浏览器开在本机时告诉 Playwright isLocal：选视频只把文件路径交给浏览器自己读。
+// 不加的话 Playwright 按"浏览器在别的机器"处理，把整个视频转成 base64 塞进 CDP：
+// 超过 50MB 直接报错，几十MB 的也常常卡到 setInputFiles 30 秒超时。
+// 只认回环地址；以后真接远程浏览器时自动退回原来的传文件方式。
+export function cdpConnectOptions(endpoint) {
+  try {
+    const host = new URL(endpoint).hostname;
+    return ['127.0.0.1', 'localhost', '[::1]'].includes(host) ? { isLocal: true } : {};
+  } catch {
+    return {};
+  }
+}
+
 async function findOrOpenStudioPage(browser) {
   const contexts = browser.contexts();
   for (const ctx of contexts) {
@@ -138,7 +151,7 @@ async function processAccountOnce(account, settings, adapter, log, slot = null) 
 
   const { wsEndpoint, reused } = await adapter.startProfile(account);
   if (reused) log.info('已复用本账号正在运行的浏览器环境，跳过重复启动');
-  const browser = await chromium.connectOverCDP(wsEndpoint);
+  const browser = await chromium.connectOverCDP(wsEndpoint, cdpConnectOptions(wsEndpoint));
   try {
     const page = await findOrOpenStudioPage(browser);
     const config = {
