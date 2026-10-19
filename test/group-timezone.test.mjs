@@ -348,3 +348,17 @@ test('真实控制台JS：每张账号卡片显示实际时区和当地时间，
   assert.equal(await group.locator('.group-local-time').innerText(), '当地 13:00');
   assert.deepEqual(errors, []);
 });
+
+test('真实控制台JS：下拉框正在操作时，3秒一次的状态刷新不能重建它（否则正在选的下拉框会被关掉）', async t => {
+  const { page, group, errors } = await consoleFixture(t);
+  const select = group.locator('select');
+  await select.focus();
+  await select.evaluate(el => { el.dataset.marker = 'kept'; });
+  await page.evaluate(() => { window.fixtureNow += 60000; });
+  await page.evaluate(() => refreshStatus());
+  assert.equal(await group.locator('select[data-marker="kept"]').count(), 1, '聚焦中的下拉框被刷新重建了');
+  await select.evaluate(el => el.blur());
+  await page.evaluate(() => refreshStatus());
+  assert.equal(await group.locator('.group-local-time').innerText(), '当地 12:01', '失去焦点后恢复正常刷新');
+  assert.deepEqual(errors, []);
+});

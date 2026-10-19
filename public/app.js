@@ -110,6 +110,9 @@ function localTime(timezone, nowMs = Date.now()) {
 }
 
 function renderAccounts() {
+  // 状态每3秒刷新一次会重建整个列表。分组时区下拉框正在操作时跳过这一次，
+  // 否则用户还在选时区，下拉框就被删掉重建、当场关闭。失去焦点后下一次刷新照常重画。
+  if (document.activeElement?.classList?.contains('group-timezone')) return;
   const list = document.getElementById('accounts-list');
   const empty = document.getElementById('accounts-empty');
   list.innerHTML = '';
@@ -146,6 +149,8 @@ function renderAccounts() {
       }
       select.addEventListener('change', async (e) => {
         e.stopPropagation();
+        // 先让出焦点，保存后的刷新才能立刻重画（见 renderAccounts 开头的跳过逻辑）。
+        select.blur();
         select.disabled = true;
         try {
           const result = await api('PUT', `/api/phone-groups/${encodeURIComponent(name)}/timezone`, { timezone: select.value });
