@@ -99,6 +99,16 @@ function phoneGroupOf(account) {
   return typeof account.phoneGroup === 'string' ? account.phoneGroup.trim() : '';
 }
 
+function localTime(timezone, nowMs = Date.now()) {
+  try {
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    }).format(nowMs);
+  } catch {
+    return '--:--';
+  }
+}
+
 function renderAccounts() {
   const list = document.getElementById('accounts-list');
   const empty = document.getElementById('accounts-empty');
@@ -110,6 +120,9 @@ function renderAccounts() {
   empty.style.display = 'none';
 
   const statusByName = new Map(statusData.accounts.map((a) => [a.name, a]));
+  const globalTimezone = currentSettings?.timezone || 'Asia/Jakarta';
+  const groupTimezones = currentSettings?.phoneGroupTimezones || {};
+  const nowMs = Date.now();
   const groups = new Map();
   const groupNames = [...new Set(accountsConfig.map(phoneGroupOf))]
     .sort((a, b) => !a ? 1 : !b ? -1 : a.localeCompare(b, 'zh-CN', { numeric: true }));
@@ -119,6 +132,38 @@ function renderAccounts() {
     group.className = 'phone-group';
     group.open = !collapsedPhones.has(name);
     group.innerHTML = `<summary><span>${escapeHtml(name || '未分组')}</span><small>${members.length} 个账号</small></summary><div class="phone-accounts"></div>`;
+    const summary = group.querySelector('summary');
+    const groupTimezone = Object.hasOwn(groupTimezones, name) ? groupTimezones[name] || '' : '';
+    const canSetTimezone = name && name !== '未分组';
+    if (canSetTimezone) {
+      const select = document.createElement('select');
+      select.className = 'group-timezone';
+      select.setAttribute('aria-label', `${name}的时区`);
+      select.innerHTML = `<option value="">沿用全局（${escapeHtml(globalTimezone)}）</option>` + timezoneOptionsHtml(groupTimezone);
+      select.value = groupTimezone;
+      for (const event of ['click', 'dblclick', 'pointerdown', 'mousedown', 'keydown', 'keyup', 'input']) {
+        select.addEventListener(event, e => e.stopPropagation());
+      }
+      select.addEventListener('change', async (e) => {
+        e.stopPropagation();
+        select.disabled = true;
+        try {
+          const result = await api('PUT', `/api/phone-groups/${encodeURIComponent(name)}/timezone`, { timezone: select.value });
+          currentSettings.phoneGroupTimezones = result.phoneGroupTimezones;
+          await refreshStatus();
+        } catch (err) {
+          select.value = groupTimezone;
+          showGlobalError(err.message);
+        } finally {
+          select.disabled = false;
+        }
+      });
+      summary.appendChild(select);
+    }
+    const clock = document.createElement('small');
+    clock.className = 'group-local-time';
+    clock.textContent = `${canSetTimezone ? '' : `沿用全局 ${globalTimezone} · `}当地 ${localTime(canSetTimezone && groupTimezone || globalTimezone, nowMs)}`;
+    summary.appendChild(clock);
     group.addEventListener('toggle', () => {
       if (!group.isConnected) return;
       if (group.open) collapsedPhones.delete(name); else collapsedPhones.add(name);
@@ -188,6 +233,12 @@ function renderAccounts() {
       runtime && runtime.dailyLimit
         ? `<span class="tag" title="今日已发/每日上限">今日 ${runtime.publishedToday}/${runtime.dailyLimit}</span>`
         : '';
+    const groupName = phoneGroupOf(account);
+    const groupTimezone = groupName && Object.hasOwn(groupTimezones, groupName) ? groupTimezones[groupName] : '';
+    const timezone = runtime?.timezone || account.timezone || groupTimezone || globalTimezone;
+    const timezoneLabel = PINNED_TIMEZONES.find(([value]) => value === timezone)?.[1] || timezone;
+    const accountTimezone = runtime ? runtime.timezoneSource === 'account' : Boolean(account.timezone);
+    const timezoneBadge = `<span class="tag account-timezone" title="${escapeAttr(timezone)}">${escapeHtml(timezoneLabel)} ${localTime(timezone, nowMs)}${accountTimezone ? ' · 账号单独设置' : ''}</span>`;
 
     const actions = [];
     if (enabled && runtime && runtime.paused && runtime.pauseCode === 'uncertain_publish') {
@@ -214,6 +265,7 @@ function renderAccounts() {
       <div class="ac-meta">
         ${progressHtml}
         ${quotaBadge}
+        ${timezoneBadge}
         ${runtime && runtime.scheduleMode === 'slots' ? `<span class="tag">今日错过 ${runtime.missedSlotsToday || 0} 个节点</span>` : ''}
       </div>
       <div class="ac-path" title="${escapeAttr(account.videoFolder)}">${escapeHtml(account.videoFolder)}</div>
@@ -873,11 +925,10 @@ const PINNED_TIMEZONES = [
   ['Europe/London', '英国（伦敦）'],
   ['America/New_York', '美国东部（纽约）'],
   ['America/Los_Angeles', '美国西部（洛杉矶）'],
+  ['America/Mexico_City', '墨西哥（墨西哥城）'],
 ];
 
-function populateTimezones(currentValue) {
-  const sel = document.getElementById('s-timezone');
-  if (!sel) return;
+function timezoneOptionsHtml(currentValue) {
   let all = [];
   try {
     all = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
@@ -896,7 +947,12 @@ function populateTimezones(currentValue) {
   if (currentValue && !pinnedKeys.includes(currentValue) && !rest.includes(currentValue)) {
     html += '<optgroup label="当前设置">' + opt(currentValue, currentValue) + '</optgroup>';
   }
-  sel.innerHTML = html;
+  return html;
+}
+
+function populateTimezones(currentValue) {
+  const sel = document.getElementById('s-timezone');
+  if (sel) sel.innerHTML = timezoneOptionsHtml(currentValue);
 }
 
 async function init() {

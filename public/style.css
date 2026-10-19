@@ -304,6 +304,17 @@ section.card {
   color: var(--text-2);
   font-weight: 400;
 }
+.phone-group .group-timezone {
+  display: inline-block;
+  width: auto;
+  max-width: 100%;
+  margin: 6px 0 6px 12px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 400;
+  vertical-align: middle;
+}
+.group-local-time { white-space: nowrap; }
 .phone-accounts {
   padding: 12px;
   display: grid;

@@ -119,16 +119,39 @@ export function resolveHashtags(settings, account) {
   return account.hashtagKeywords || settings.hashtagKeywords;
 }
 
-// 账号自己可以覆盖每日额度/时区(accounts.json里手动加字段)，不填就用全局设置；
-// 0/负数/非数字都当"不限"处理。网页目前只暴露全局设置，账号级覆盖是留给以后
+// 账号自己可以覆盖每日额度(accounts.json里手动加字段)，不填就用全局设置；
+// 0/负数/非数字都当"不限"处理。网页目前只暴露全局额度，账号级覆盖是留给以后
 // 需要"这几个账号跟其他的不一样"时用的，不用改代码。
 export function resolveDailyLimit(settings, account) {
   const raw = account.dailyPublishLimit ?? settings.dailyPublishLimit;
   return Number.isFinite(raw) && raw > 0 ? raw : Infinity;
 }
 
+function phoneGroupTimezone(settings, account) {
+  const name = typeof account.phoneGroup === 'string' ? account.phoneGroup.trim() : '';
+  const timezones = settings.phoneGroupTimezones;
+  return name && timezones && Object.hasOwn(timezones, name) ? timezones[name] : undefined;
+}
+
 export function resolveTimezone(settings, account) {
-  return account.timezone || settings.timezone || 'Asia/Jakarta';
+  return account.timezone || phoneGroupTimezone(settings, account) || settings.timezone || 'Asia/Jakarta';
+}
+
+export function resolveTimezoneSource(settings, account) {
+  if (account.timezone) return 'account';
+  if (phoneGroupTimezone(settings, account)) return 'group';
+  return 'global';
+}
+
+export function isValidTimezone(tz) {
+  if (typeof tz !== 'string' || !tz) return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch (err) {
+    if (err instanceof RangeError) return false;
+    throw err;
+  }
 }
 
 // 允许发布的时间段(按小时,账号自己的时区)。默认中午12点到午夜0点(=24点)，

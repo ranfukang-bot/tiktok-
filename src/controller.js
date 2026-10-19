@@ -1,4 +1,4 @@
-import { loadSettings, loadAccounts, loadAllAccounts, resolveDailyLimit, resolveTimezone, resolvePostingPlan } from './config.js';
+import { loadSettings, loadAccounts, loadAllAccounts, resolveDailyLimit, resolveTimezone, resolveTimezoneSource, resolvePostingPlan } from './config.js';
 import { tickAll, isAccountProcessing, syncAccountFolder } from './orchestrator.js';
 import { getState, setState, resume } from './stateStore.js';
 import { createLogger } from './logger.js';
@@ -115,6 +115,7 @@ export function getStatus() {
         lastError: state.lastError,
         publishedToday,
         timezone,
+        timezoneSource: resolveTimezoneSource(settings, account),
         dailyLimit: Number.isFinite(dailyLimit) ? dailyLimit : null,
         quotaExhausted: Number.isFinite(dailyLimit) && publishedToday >= dailyLimit,
         inPostingWindow,

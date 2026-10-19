@@ -1,6 +1,7 @@
 import express from 'express';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import open from 'open';
 import {
@@ -14,6 +15,7 @@ import {
   REQUIRED_TEXT_KEYS,
   SAFETY_CRITICAL_TEXT_KEYS,
   resolvePostingPlan,
+  isValidTimezone,
 } from './config.js';
 import * as controller from './controller.js';
 import { isAccountProcessing } from './orchestrator.js';
@@ -98,8 +100,32 @@ app.put('/api/settings', (req, res) => {
         throw new Error('至少要留一个发布时间节点，否则永远不会发布');
       }
     }
+    // 全局表单可能持有旧快照，分组时区只允许由专用接口更新。
+    settings.phoneGroupTimezones = loadSettings().phoneGroupTimezones;
     saveSettings(settings);
     res.json({ ok: true });
+  } catch (err) {
+    handleError(res, err);
+  }
+});
+
+app.put('/api/phone-groups/:name/timezone', (req, res) => {
+  try {
+    const name = req.params.name.trim();
+    if (!name) throw new Error('手机分组名不能为空');
+    if (name === '未分组') throw new Error('未分组账号沿用全局时区，不能单独设置');
+    const timezone = req.body?.timezone;
+    if (timezone !== '' && !isValidTimezone(timezone)) {
+      throw new Error('时区无效，请选择有效的 IANA 时区');
+    }
+    // 直接读取原始文件，只改分组时区，不把默认值或旧页面快照写回其它设置。
+    const settings = JSON.parse(readFileSync(path.join(__dirname, '..', 'config', 'settings.json'), 'utf8'));
+    const phoneGroupTimezones = { ...settings.phoneGroupTimezones, ...(timezone ? { [name]: timezone } : {}) };
+    if (timezone === '') delete phoneGroupTimezones[name];
+    settings.phoneGroupTimezones = phoneGroupTimezones;
+    saveSettings(settings);
+    controller.invalidateSchedule();
+    res.json({ ok: true, phoneGroupTimezones });
   } catch (err) {
     handleError(res, err);
   }
