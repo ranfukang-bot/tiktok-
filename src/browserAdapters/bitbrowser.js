@@ -4,6 +4,15 @@
 //   POST /browser/open   body: { id }               -> { success, data: { ws, http, ... } }
 //   POST /browser/close  body: { id }
 //   POST /browser/list   body: { page, pageSize }    -> 环境列表（用于网页上按名字选账号，不用手抄ID）
+// 窗口被全屏游戏等完全挡住时，Chromium 默认把页面当作后台：定时器最慢一分钟才跑一次，
+// 页面里"等元素出现"的短超时会误判失败。自动发布不再把窗口提到前台，所以启动时关掉这些限速。
+// 只影响浏览器内部调度，不改变指纹；对已经开着的窗口不生效，下次重新打开时生效。
+export const BACKGROUND_SAFE_ARGS = [
+  '--disable-backgrounding-occluded-windows',
+  '--disable-renderer-backgrounding',
+  '--disable-background-timer-throttling',
+];
+
 export function createBitBrowserAdapter(settings, { request = fetch, delay = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
   const baseUrl = (settings.baseUrl || 'http://127.0.0.1:54345').replace(/\/$/, '');
 
@@ -66,7 +75,7 @@ export function createBitBrowserAdapter(settings, { request = fetch, delay = ms 
       if (existing) return existing;
       let data;
       for (let attempt = 0; attempt < 3; attempt++) {
-        try { data = await post('/browser/open', { id }); break; }
+        try { data = await post('/browser/open', { id, args: BACKGROUND_SAFE_ARGS }); break; }
         catch (err) {
           // 仅明确的启动TLS业务失败短重试；请求超时等结果不明情况交给外层退避。
           if (err.code !== 'BITBROWSER_START_TLS') throw err;

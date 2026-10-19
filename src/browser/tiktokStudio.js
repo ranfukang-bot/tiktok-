@@ -144,8 +144,10 @@ async function clearCaptionWithRealKeyboard(page, log) {
 }
 
 export async function fillCaption(page, config, log) {
-  // 真实鼠标/键盘事件依赖当前页面焦点和视口坐标，先把标签页提到前台
-  await page.bringToFront().catch(() => {});
+  // 不要调用 page.bringToFront()：它会把指纹浏览器窗口强行提到桌面最前面，
+  // 抢走用户正在用的程序（比如全屏游戏）的焦点。Playwright 连接页面时已开启
+  // 焦点模拟，CDP 发出的真实鼠标/键盘事件直接送进这个页面，不需要窗口在前台。
+  // 窗口被挡住时的后台限速由比特浏览器启动参数关闭（见 browserAdapters/bitbrowser.js）。
 
   await clearCaptionWithRealKeyboard(page, log);
   await humanDelay(1200, 2000);
