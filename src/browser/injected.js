@@ -489,10 +489,31 @@ export function installTkqInPage(config) {
       return rows[0] || null;
     };
 
+    // 墨西哥等站点的商品弹窗顶部有一排来源标签（TUXTabBar）：实测 id="1" 是"我的店铺"（默认选中），
+    // id="2" 是"橱窗商品"。东南亚没有这排标签，走原流程。只按结构和编号识别，不看标签文字。
+    // 先在橱窗标签（id=2）里搜，搜不到再依次试其它标签；无论在哪个标签，都只认精确商品ID。
+    //
+    // 墨西哥实测：弹窗刚打开时标签栏还在加载，结构和加载完以后不一样，加载完还可能把选中状态
+    // 重置回"我的店铺"。所以不能只在开头判断一次：切到目标标签后要观察它是否仍被选中，
+    // 并且在等搜索结果的整个过程中持续核对；一旦被页面切回，就重新切换、重新搜索（最多3次）。
+    const sourceTabButton = (id) => Array.from(productDialog.querySelectorAll('.TUXTabBar-item'))
+      .find((item) => item.id === id && isVisible(item))?.querySelector('button.TUXTabBar-itemTitle') || null;
+    const isSourceTabActive = (id) => Boolean(sourceTabButton(id)?.classList.contains('TUXTabBar-itemTitle--active'));
+    // 所有来源标签的状态快照（含不可见的），写进日志，真实页面再出意外时一看就知道当时的状态。
+    const sourceTabSnapshot = () => Array.from(productDialog.querySelectorAll('.TUXTabBar-item')).map((item) => {
+      const rect = item.getBoundingClientRect();
+      const button = item.querySelector('button.TUXTabBar-itemTitle');
+      const active = Boolean(button && button.classList.contains('TUXTabBar-itemTitle--active'));
+      return `${item.id || '?'}${active ? '[选中]' : ''}${isVisible(item) ? '' : '(不可见)'}:${Math.round(rect.width)}x${Math.round(rect.height)}`;
+    }).join(' ') || '无';
+    const visibleSourceTabIds = () => Array.from(productDialog.querySelectorAll('.TUXTabBar-item'))
+      .filter(isVisible).map((item) => item.id);
+
     // 在当前显示的商品列表里按精确ID搜索。
     // 没有来源标签时（东南亚）保持原行为：出现空橱窗提示就直接报错。
     // 有来源标签时，某个标签里没有搜索框、只有空列表提示，只代表"这个标签是空的"，返回 empty 换下一个。
-    const searchCurrentProductList = async (hasSourceTabs) => {
+    // guardTabId：等结果期间该标签必须一直是选中状态，否则返回 lostTab，由调用方重新切换再搜。
+    const searchCurrentProductList = async (hasSourceTabs, guardTabId = null) => {
       const found = await waitFor(() => {
         if (!hasSourceTabs && productDialog.querySelector('.product-empty-container')) {
           throw new Error('商品橱窗为空，请先在TikTok App添加橱窗商品');
@@ -507,38 +528,36 @@ export function installTkqInPage(config) {
       found.dispatchEvent(new Event('input', { bubbles: true }));
       const searchIcon = await waitFor(() => uniqueVisible(productDialog, '.product-search-icon', '商品搜索按钮'));
       fireClick(searchIcon);
-      return { row: await waitForOrNull(findProductRow, 20000), empty: false };
+      const deadline = Date.now() + 20000;
+      while (Date.now() < deadline) {
+        checkForAppCrash();
+        if (guardTabId && !isSourceTabActive(guardTabId)) return { row: null, empty: false, lostTab: true };
+        const candidate = findProductRow();
+        if (candidate) return { row: candidate, empty: false };
+        await sleep(150);
+      }
+      return { row: null, empty: false };
     };
 
-    // 墨西哥等站点的商品弹窗顶部有一排来源标签（TUXTabBar）：实测 id="1" 是"我的店铺"（默认选中），
-    // id="2" 是"橱窗商品"。东南亚没有这排标签，走原流程。只按结构和编号识别，不看标签文字。
-    // 先在橱窗标签（id=2）里搜，搜不到再依次试其它标签；无论在哪个标签，都只认精确商品ID。
-    //
-    // 墨西哥的标签栏是分批出现的：弹窗刚打开时只有"我的店铺"，"橱窗商品"要再过几秒才渲染出来。
-    // 必须等标签栏稳定下来再决定在哪里搜索，否则会在"我的店铺"里白搜一遍然后报找不到。
-    // 已有标签但还没有 id=2 时最多等 15 秒；完全没有标签（东南亚）时连续 2.5 秒仍没有就按原流程继续。
-    const visibleSourceTabIds = () => Array.from(productDialog.querySelectorAll('.TUXTabBar-item'))
-      .filter(isVisible).map((item) => item.id).join(',');
+    // 先等标签栏有动静：有 id=2 且状态连续 2 秒不变就开始；完全没有标签（东南亚）连续 2.5 秒仍没有就按原流程。
+    // 最多等 15 秒。之后即使页面再变化，也由下面的切换核对兜住。
     {
       const started = Date.now();
-      let seen = visibleSourceTabIds();
+      let seen = sourceTabSnapshot();
       let stableSince = started;
       while (Date.now() - started < 15000) {
         checkForAppCrash();
         if (getTopModal() !== productDialog) throw new Error('商品选择弹窗发生变化，已停止挂车');
-        const current = visibleSourceTabIds();
+        const current = sourceTabSnapshot();
         if (current !== seen) { seen = current; stableSince = Date.now(); }
-        const ids = seen ? seen.split(',') : [];
+        const ids = visibleSourceTabIds();
         const stableFor = Date.now() - stableSince;
-        if (ids.includes('2') && stableFor >= 1000) break;
+        if (ids.includes('2') && stableFor >= 2000) break;
         if (!ids.length && stableFor >= 2500) break;
         await sleep(200);
       }
-      log(`商品来源标签：${seen || '无'}（等了 ${Math.round((Date.now() - started) / 1000)} 秒确认标签栏已加载完）`);
+      log(`商品来源标签：${sourceTabSnapshot()}（等了 ${Math.round((Date.now() - started) / 1000)} 秒）`);
     }
-    const sourceTabButton = (id) => Array.from(productDialog.querySelectorAll('.TUXTabBar-item'))
-      .find((item) => item.id === id && isVisible(item))?.querySelector('button.TUXTabBar-itemTitle') || null;
-    const isSourceTabActive = (id) => Boolean(sourceTabButton(id)?.classList.contains('TUXTabBar-itemTitle--active'));
     const sourceTabs = Array.from(productDialog.querySelectorAll('.TUXTabBar-item')).filter(isVisible)
       .map((item) => ({ id: item.id, button: item.querySelector('button.TUXTabBar-itemTitle') }));
 
@@ -555,19 +574,38 @@ export function installTkqInPage(config) {
       const ordered = [...sourceTabs.filter((tab) => tab.id === '2'), ...sourceTabs.filter((tab) => tab.id !== '2')];
       let emptyTabs = 0;
       for (const tab of ordered) {
-        if (getTopModal() !== productDialog) throw new Error('商品选择弹窗发生变化，已停止挂车');
-        if (!isSourceTabActive(tab.id)) {
-          const button = sourceTabButton(tab.id);
-          if (!button || !isEnabled(button)) {
-            log(`商品来源标签 ${tab.id} 当前不可用，跳过`);
+        let result = null;
+        let skipped = false;
+        for (let attempt = 1; attempt <= 3 && !result && !skipped; attempt += 1) {
+          if (getTopModal() !== productDialog) throw new Error('商品选择弹窗发生变化，已停止挂车');
+          if (!isSourceTabActive(tab.id)) {
+            const button = sourceTabButton(tab.id);
+            if (!button || !isEnabled(button)) {
+              log(`商品来源标签 ${tab.id} 当前不可用，跳过（${sourceTabSnapshot()}）`);
+              skipped = true;
+              break;
+            }
+            fireClick(button);
+            await waitFor(() => isSourceTabActive(tab.id), 5000, 100);
+          }
+          // 切过去后再观察 1.5 秒：页面加载完成时可能把选中状态重置回默认标签。
+          await sleep(1500);
+          if (!isSourceTabActive(tab.id)) {
+            log(`商品来源标签 ${tab.id} 刚切过去又被页面切回（${sourceTabSnapshot()}），重新切换（第${attempt}/3次）`);
             continue;
           }
-          fireClick(button);
-          await waitFor(() => isSourceTabActive(tab.id), 5000, 100);
-          await sleep(300);
+          log(`在商品来源标签 ${tab.id} 中按精确商品ID搜索 ${productId}（${sourceTabSnapshot()}）`);
+          const attemptResult = await searchCurrentProductList(true, tab.id);
+          if (attemptResult.lostTab) {
+            log(`等搜索结果时商品来源标签被页面切回（${sourceTabSnapshot()}），重新切换后再搜（第${attempt}/3次）`);
+            continue;
+          }
+          result = attemptResult;
         }
-        log(`在商品来源标签 ${tab.id} 中按精确商品ID搜索 ${productId}`);
-        const result = await searchCurrentProductList(true);
+        if (skipped) continue;
+        if (!result) {
+          throw new Error(`等待元素超时：商品来源标签 ${tab.id} 反复被页面切回，未能稳定停在该标签上，尚未选择商品（${sourceTabSnapshot()}）`);
+        }
         if (result.row) { row = result.row; break; }
         if (result.empty) emptyTabs += 1;
         log(`商品来源标签 ${tab.id} 中没有找到精确商品ID ${productId}`);

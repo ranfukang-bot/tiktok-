@@ -21,12 +21,12 @@ after(async () => { await browser?.close(); });
 const ID = '1737057459092423942';
 const NAME = 'Zapatillas de algodón ultra gruesas';
 
-async function mexicoPicker({ shop = [], showcase = [], brokenTabs = false, showcaseDelayMs = 0, tabBarDelayMs = 0 } = {}) {
+async function mexicoPicker({ shop = [], showcase = [], brokenTabs = false, showcaseDelayMs = 0, tabBarDelayMs = 0, hiddenShopUntilMs = 0, resetAfterFirstSearchMs = 0 } = {}) {
   await page.setContent('<style>[role="dialog"]{position:fixed;inset:10px;background:white;border:1px solid}' +
     'button{min-width:40px;min-height:25px}input{width:200px;height:24px}</style>' +
     '<div class="anchor-tag-container"><button><span data-icon="Plus">+</span>Agregar</button></div>');
-  await page.evaluate(({ shop, showcase, brokenTabs, showcaseDelayMs, tabBarDelayMs, NAME }) => {
-    window.searches = []; window.tabClicks = []; window.radioPicks = [];
+  await page.evaluate(({ shop, showcase, brokenTabs, showcaseDelayMs, tabBarDelayMs, hiddenShopUntilMs, resetAfterFirstSearchMs, NAME }) => {
+    window.searches = []; window.tabClicks = []; window.radioPicks = []; window.resets = 0;
     const lists = { 1: shop, 2: showcase };
     const button = (type) => '<button class="TUXButton--' + type + '">btn</button>';
     const footer = () => '<div class="common-modal-footer">' + button('secondary') + button('primary') + '</div>';
@@ -34,7 +34,8 @@ async function mexicoPicker({ shop = [], showcase = [], brokenTabs = false, show
       const el = document.createElement('div'); el.className = 'TUXModal common-modal ' + cls;
       el.setAttribute('role', 'dialog'); el.innerHTML = html; document.body.append(el); return el;
     };
-    const tabItem = (id, label, active) => '<div class="TUXTabBar-item" id="' + id + '">' +
+    const tabItem = (id, label, active) => '<div class="TUXTabBar-item" id="' + id + '"' +
+      (hiddenShopUntilMs && id === '1' ? ' style="width:0;height:0;overflow:hidden;padding:0;margin:0"' : '') + '>' +
       (brokenTabs && id === '2' ? '<span>' + label + '</span>' :
         '<button class="TUXTabBar-itemTitle' + (active ? ' TUXTabBar-itemTitle--active' : '') + '" type="button" id="' + id + '"><div>' + label + '</div></button>') +
       '</div>';
@@ -59,6 +60,29 @@ async function mexicoPicker({ shop = [], showcase = [], brokenTabs = false, show
         // 真实墨西哥页面：标签栏分批出现，"我的店铺"先出来，"橱窗商品"晚几秒才出现。
         const row = select.querySelector('.tab-row');
         const addShop = () => row.insertAdjacentHTML('beforeend', tabItem('1', 'Mi tienda', true));
+        // 页面把选中状态重置回"我的店铺"并重新加载它的列表（墨西哥真实页面加载完成时的表现）。
+        const resetToShop = () => {
+          window.resets += 1;
+          activeTab = '1';
+          select.querySelectorAll('button.TUXTabBar-itemTitle').forEach((b) =>
+            b.classList.toggle('TUXTabBar-itemTitle--active', b.id === '1'));
+          select.querySelector('tbody').innerHTML = '';
+          setTimeout(() => render(lists['1']), 100);
+        };
+        if (hiddenShopUntilMs) {
+          // 刚打开时"我的店铺"标签还没真正显示（宽高为0），只看得到"橱窗商品"；
+          // 过一会儿"我的店铺"显示出来，并把选中状态重置回它。
+          setTimeout(() => {
+            const shopItem = row.querySelector('.TUXTabBar-item[id="1"]');
+            shopItem.setAttribute('style', '');
+            resetToShop();
+          }, hiddenShopUntilMs);
+        }
+        let searchesSeen = 0;
+        window.afterSearch = () => {
+          searchesSeen += 1;
+          if (resetAfterFirstSearchMs && searchesSeen === 1) setTimeout(resetToShop, resetAfterFirstSearchMs);
+        };
         const addShowcase = () => row.insertAdjacentHTML('beforeend', tabItem('2', 'Productos del escaparate', false));
         setTimeout(() => {
           addShop();
@@ -79,6 +103,7 @@ async function mexicoPicker({ shop = [], showcase = [], brokenTabs = false, show
           window.searches.push({ tab: activeTab, query });
           select.querySelector('tbody').innerHTML = '';
           setTimeout(() => render(lists[activeTab].filter((id) => id === query)), 200);
+          window.afterSearch();
         };
         next.onclick = () => {
           select.remove();
@@ -93,7 +118,7 @@ async function mexicoPicker({ shop = [], showcase = [], brokenTabs = false, show
         };
       };
     };
-  }, { shop, showcase, brokenTabs, showcaseDelayMs, tabBarDelayMs, NAME });
+  }, { shop, showcase, brokenTabs, showcaseDelayMs, tabBarDelayMs, hiddenShopUntilMs, resetAfterFirstSearchMs, NAME });
   await page.evaluate(installTkqInPage, { text: {}, hashtagKeywords: ['fyp'] });
 }
 
@@ -142,4 +167,27 @@ test('整排标签晚1.5秒才出现，也不能误判成"没有标签"按东南
   const result = await page.evaluate((id) => window.__tkq.addProductLink(id), ID);
   assert.equal(result.productId, ID);
   assert.deepEqual(await page.evaluate(() => window.searches), [{ tab: '2', query: ID }]);
+});
+
+for (const resetAt of [1500, 2500, 3500]) {
+  test(`真实时序：刚打开时只认得出"橱窗商品"，${resetAt}毫秒后页面把选中重置回"我的店铺" → 不在我的店铺里搜，最终在橱窗里挂上`, async () => {
+    await mexicoPicker({ shop: [], showcase: [ID], hiddenShopUntilMs: resetAt });
+    const result = await page.evaluate((id) => window.__tkq.addProductLink(id), ID);
+    assert.equal(result.productId, ID);
+    assert.equal(await page.evaluate(() => window.resets), 1, '页面确实发生过一次重置');
+    const searches = await page.evaluate(() => window.searches);
+    assert.ok(searches.length >= 1);
+    assert.equal(searches.at(-1).tab, '2', '最后成功的那次搜索必须在橱窗标签里');
+    assert.deepEqual(await page.evaluate(() => window.radioPicks), [ID]);
+  });
+}
+
+test('等搜索结果期间被页面切回"我的店铺" → 不把我的店铺的空结果当成"找不到"，重新切回橱窗再搜', async () => {
+  await mexicoPicker({ shop: [], showcase: [ID], resetAfterFirstSearchMs: 50 });
+  const result = await page.evaluate((id) => window.__tkq.addProductLink(id), ID);
+  assert.equal(result.productId, ID);
+  const searches = await page.evaluate(() => window.searches);
+  assert.equal(searches.length, 2, '第一次被打断，第二次重新搜');
+  assert.ok(searches.every((s) => s.tab === '2'));
+  assert.deepEqual(await page.evaluate(() => window.radioPicks), [ID]);
 });
