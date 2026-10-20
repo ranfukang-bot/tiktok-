@@ -513,6 +513,29 @@ export function installTkqInPage(config) {
     // 墨西哥等站点的商品弹窗顶部有一排来源标签（TUXTabBar）：实测 id="1" 是"我的店铺"（默认选中），
     // id="2" 是"橱窗商品"。东南亚没有这排标签，走原流程。只按结构和编号识别，不看标签文字。
     // 先在橱窗标签（id=2）里搜，搜不到再依次试其它标签；无论在哪个标签，都只认精确商品ID。
+    //
+    // 墨西哥的标签栏是分批出现的：弹窗刚打开时只有"我的店铺"，"橱窗商品"要再过几秒才渲染出来。
+    // 必须等标签栏稳定下来再决定在哪里搜索，否则会在"我的店铺"里白搜一遍然后报找不到。
+    // 已有标签但还没有 id=2 时最多等 15 秒；完全没有标签（东南亚）时连续 2.5 秒仍没有就按原流程继续。
+    const visibleSourceTabIds = () => Array.from(productDialog.querySelectorAll('.TUXTabBar-item'))
+      .filter(isVisible).map((item) => item.id).join(',');
+    {
+      const started = Date.now();
+      let seen = visibleSourceTabIds();
+      let stableSince = started;
+      while (Date.now() - started < 15000) {
+        checkForAppCrash();
+        if (getTopModal() !== productDialog) throw new Error('商品选择弹窗发生变化，已停止挂车');
+        const current = visibleSourceTabIds();
+        if (current !== seen) { seen = current; stableSince = Date.now(); }
+        const ids = seen ? seen.split(',') : [];
+        const stableFor = Date.now() - stableSince;
+        if (ids.includes('2') && stableFor >= 1000) break;
+        if (!ids.length && stableFor >= 2500) break;
+        await sleep(200);
+      }
+      log(`商品来源标签：${seen || '无'}（等了 ${Math.round((Date.now() - started) / 1000)} 秒确认标签栏已加载完）`);
+    }
     const sourceTabButton = (id) => Array.from(productDialog.querySelectorAll('.TUXTabBar-item'))
       .find((item) => item.id === id && isVisible(item))?.querySelector('button.TUXTabBar-itemTitle') || null;
     const isSourceTabActive = (id) => Boolean(sourceTabButton(id)?.classList.contains('TUXTabBar-itemTitle--active'));
