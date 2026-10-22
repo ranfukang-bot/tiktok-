@@ -4,10 +4,10 @@ import { execFile } from 'node:child_process';
 // 目前只在 Windows 上实现（用户的运行环境是 Windows）；其它系统上直接拒绝，
 // 调用方看到失败就不会删文件，而不是退化成 fs.unlink 永久删除——那样就
 // 违背了"要有退路"这个初衷。
-export function moveToTrash(absolutePath) {
-  if (process.platform !== 'win32') {
+export function moveToTrash(absolutePath, { run = execFile, platform = process.platform } = {}) {
+  if (platform !== 'win32') {
     return Promise.reject(
-      new Error(`当前系统(${process.platform})暂不支持"移到回收站"，为了安全没有执行永久删除，请手动清理这个文件`)
+      new Error(`当前系统(${platform})暂不支持"移到回收站"，为了安全没有执行永久删除，请手动清理这个文件`)
     );
   }
   return new Promise((resolve, reject) => {
@@ -19,10 +19,12 @@ export function moveToTrash(absolutePath) {
     // 用 -EncodedCommand 而不是 -Command 直接拼字符串，绕开Windows那一层shell/cmd的
     // 参数转义坑，路径里有空格、括号这些常见字符都不用担心。
     const encoded = Buffer.from(script, 'utf16le').toString('base64');
-    execFile(
+    // windowsHide：控制台不是从命令行窗口启动时（比如被别的程序在后台拉起），
+    // 每发完一条都会弹出一个 PowerShell 黑窗口，一闪而过也足以把全屏游戏切出去。
+    run(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
-      { timeout: 30000 },
+      { timeout: 30000, windowsHide: true },
       (err, stdout, stderr) => {
         if (err) return reject(new Error((stderr || err.message || '').trim() || 'PowerShell执行失败'));
         resolve();

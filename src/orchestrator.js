@@ -18,6 +18,7 @@ import { notify } from './notifier.js';
 import { watchForStall, DEFAULT_CYCLE_ALERT_MS, SCHEDULER_ALERT_MS } from './stallAlert.js';
 import { routeInbox } from './inbox.js';
 import { loadJoblist } from './joblist.js';
+import { createForegroundWatch } from './foregroundWatch.js';
 import {
   rolloverIfNewDay,
   hasQuotaRemaining,
@@ -41,6 +42,8 @@ function randomInterval(min, max) {
 
 const processingAccounts = new Set();
 const activeSlots = new Map();
+// 发布期间记录"最前面的窗口"每次变化（只在 Windows 上），用来查到底是谁把游戏切出去。
+const foregroundWatch = createForegroundWatch({ fallbackLog: createLogger('调度器') });
 export function isAccountProcessing(name) {
   return processingAccounts.has(name);
 }
@@ -272,6 +275,7 @@ async function tickAccount(settings, account, adapters, { folderSynced = false }
   if (processingAccounts.has(account.name)) return;
   processingAccounts.add(account.name);
   const log = createLogger(account.name);
+  let stopForegroundRecord = () => {};
   const alertMs = Number.isFinite(settings.cycleAlertMs) && settings.cycleAlertMs > 0
     ? settings.cycleAlertMs : DEFAULT_CYCLE_ALERT_MS;
   const cycleWatchdog = watchForStall(settings, {
@@ -337,6 +341,7 @@ async function tickAccount(settings, account, adapters, { folderSynced = false }
 
     const adapter = adapters.get(account.browser);
     if (slot) activeSlots.set(account.name, slot);
+    stopForegroundRecord = foregroundWatch.track(account.name, log, { enabled: settings.foregroundWatch !== false });
     await processAccountOnce(account, settings, adapter, log, slot);
   } catch (err) {
     // 开浏览器/等页面时过点、尚未上传：不计失败，留到下一节点；已上传的不走此分支。
@@ -350,6 +355,7 @@ async function tickAccount(settings, account, adapters, { folderSynced = false }
     }
     await handleAccountError(account, settings, err, log);
   } finally {
+    stopForegroundRecord();
     cycleWatchdog.stop();
     activeSlots.delete(account.name);
     processingAccounts.delete(account.name);
