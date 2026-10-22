@@ -2,7 +2,7 @@ import express from 'express';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
-import { execFile } from 'node:child_process';
+import { pickFolder } from './pickFolder.js';
 import open from 'open';
 import {
   ensureConfigFiles,
@@ -274,19 +274,15 @@ app.get('/api/bitbrowser/profiles', async (req, res) => {
 });
 
 // 打开系统原生的"选择文件夹"对话框（目前只支持 Windows；其它系统请直接把路径粘贴进输入框）。
-app.post('/api/pick-folder', (req, res) => {
+app.post('/api/pick-folder', async (req, res) => {
   if (process.platform !== 'win32') {
     return res.status(501).json({ error: '当前系统不支持自动弹出文件夹选择框，请直接把文件夹路径粘贴到输入框里' });
   }
-  const script =
-    'Add-Type -AssemblyName System.Windows.Forms; ' +
-    '$f = New-Object System.Windows.Forms.FolderBrowserDialog; ' +
-    "if ($f.ShowDialog() -eq 'OK') { Write-Output $f.SelectedPath }";
-  execFile('powershell.exe', ['-NoProfile', '-Command', script], { timeout: 120000 }, (err, stdout) => {
-    if (err) return res.status(500).json({ error: `无法打开文件夹选择框: ${err.message}` });
-    const selected = stdout.trim();
-    res.json({ path: selected || null });
-  });
+  try {
+    res.json({ path: await pickFolder() });
+  } catch (err) {
+    res.status(500).json({ error: `无法打开文件夹选择框: ${err.message}` });
+  }
 });
 
 // ===== 品单 =====
