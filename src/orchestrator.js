@@ -152,7 +152,20 @@ async function processAccountOnce(account, settings, adapter, log, slot = null) 
   // 那些情况的处理办法就是"人去打开这个号看一眼"，窗口关了就没得看了。
   let publishConfirmed = false;
 
-  const { wsEndpoint, reused } = await adapter.startProfile(account);
+  // 比特浏览器打开窗口的那一刻会把新窗口提到最前面，把正在玩的游戏切出去。
+  // 打开前记下最前面的窗口，打开后若被比特窗口抢走就立刻切回（仅 Windows）。
+  const openGuard = await foregroundWatch.guardOpen(log, {
+    enabled: settings.foregroundWatch !== false && settings.keepForeground !== false,
+  });
+  let started;
+  try {
+    started = await adapter.startProfile(account);
+  } catch (err) {
+    openGuard.stop();
+    throw err;
+  }
+  openGuard.opened({ pid: started.pid });
+  const { wsEndpoint, reused } = started;
   if (reused) log.info('已复用本账号正在运行的浏览器环境，跳过重复启动');
   const browser = await chromium.connectOverCDP(wsEndpoint, cdpConnectOptions(wsEndpoint));
   try {

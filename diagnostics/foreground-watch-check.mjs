@@ -14,7 +14,8 @@ if (process.platform !== 'win32') {
 const encoded = Buffer.from(FOREGROUND_WATCH_SCRIPT, 'utf16le').toString('base64');
 const proc = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
   windowsHide: true,
-  stdio: ['ignore', 'pipe', 'pipe'],
+  // 标准输入必须是管道：脚本发现标准输入断开就会自己退出。
+  stdio: ['pipe', 'pipe', 'pipe'],
 });
 proc.stdout.setEncoding('utf8');
 proc.stderr.setEncoding('utf8');
@@ -23,7 +24,7 @@ let count = 0;
 let errorText = '';
 createInterface({ input: proc.stdout }).on('line', (line) => {
   const fg = parseForegroundLine(line);
-  if (fg) {
+  if (fg && fg.event === 'foreground') {
     count += 1;
     console.log(`${new Date().toLocaleTimeString()}  ${describeForeground(fg)}`);
   } else if (line.trim()) {

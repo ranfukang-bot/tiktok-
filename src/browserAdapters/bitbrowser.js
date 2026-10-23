@@ -92,7 +92,9 @@ export function createBitBrowserAdapter(settings, { request = fetch, delay = ms 
       if (!wsEndpoint) {
         throw new Error(`比特浏览器打开环境 ${id} 成功，但没有返回ws/http调试地址，实际返回: ${JSON.stringify(data)}`);
       }
-      return { wsEndpoint };
+      // 比特返回的内核进程号：防抢前台用它认出"刚打开的这个窗口"。
+      const pid = Number(data?.pid);
+      return Number.isInteger(pid) && pid > 0 ? { wsEndpoint, pid } : { wsEndpoint };
     },
 
     async stopProfile(account) {

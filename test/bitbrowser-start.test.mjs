@@ -73,3 +73,12 @@ test('端口映射过期或无效不会被当作启动成功', async () => {
     assert.equal((await f.adapter.startProfile({browserId:'mine'})).wsEndpoint,'ws://local/new');
   }
 });
+
+test('打开成功时带回比特返回的内核进程号（防抢前台用它认出新窗口），没有就不带', async () => {
+  const withPid = fixture(({url}) => url.endsWith('/browser/ports')
+    ? {success:true,data:{}} : {success:true,data:{ws:'ws://local/a',pid:4321}});
+  assert.deepEqual(await withPid.adapter.startProfile({browserId:'mine'}), {wsEndpoint:'ws://local/a',pid:4321});
+  const noPid = fixture(({url}) => url.endsWith('/browser/ports')
+    ? {success:true,data:{}} : {success:true,data:{ws:'ws://local/b',pid:'abc'}});
+  assert.deepEqual(await noPid.adapter.startProfile({browserId:'mine'}), {wsEndpoint:'ws://local/b'});
+});
