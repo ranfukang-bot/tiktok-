@@ -18,8 +18,6 @@ function fakeSpawn() {
   const spawnImpl = (file, args, options) => {
     const proc = new EventEmitter();
     proc.stdout = new PassThrough();
-    proc.written = [];
-    proc.stdin = { destroyed: false, on() {}, write: (text) => { proc.written.push(text); return true; } };
     proc.killed = false;
     proc.kill = () => { proc.killed = true; proc.emit('exit', 0); };
     calls.push({ file, args, options, proc });
@@ -42,24 +40,13 @@ test('PowerShell 脚本先切 UTF-8 再输出，不把 $pid 当普通变量用',
   assert.ok(FOREGROUND_WATCH_SCRIPT.includes('GetForegroundWindow'));
   assert.ok(FOREGROUND_WATCH_SCRIPT.includes('[Console]::Out.Flush()'), '每行都要立刻刷出去，否则会攒着不报');
   assert.ok(!/\$pid\b/i.test(FOREGROUND_WATCH_SCRIPT), '$pid 是 PowerShell 只读自带变量');
-  // [Console]::In 的 ReadLineAsync 在 Windows PowerShell 里是同步的，会卡死整个循环。
-  assert.ok(!/\[Console\]::In\b/.test(FOREGROUND_WATCH_SCRIPT));
-  assert.ok(FOREGROUND_WATCH_SCRIPT.includes('[Console]::OpenStandardInput()'));
-  assert.ok(FOREGROUND_WATCH_SCRIPT.includes('ReadLineAsync()'));
-  assert.ok(FOREGROUND_WATCH_SCRIPT.includes('if ($null -eq $cmd) { break }'), '标准输入断开时必须退出，不留孤儿进程');
-  for (const api of ['AttachThreadInput', 'IsGUIThread', 'SetForegroundWindow', 'SwitchToThisWindow', 'IsIconic']) {
-    assert.ok(FOREGROUND_WATCH_SCRIPT.includes(api), `切回窗口需要 ${api}`);
-  }
-  assert.ok(FOREGROUND_WATCH_SCRIPT.includes("'^restore (\\d+)$'"), '只接受 restore <数字句柄> 这一种命令');
 });
 
 test('解析一行输出：正常 JSON、带 BOM、乱七八糟的行', () => {
   assert.deepEqual(
-    parseForegroundLine('\uFEFF{"event":"foreground","hwnd":"1234","pid":88,"name":"r5apex","title":"Apex Legends","path":"D:\\\\Games\\\\r5apex.exe","started":""}'),
-    { event: 'foreground', hwnd: '1234', pid: 88, name: 'r5apex', title: 'Apex Legends', path: 'D:\\Games\\r5apex.exe', started: '' },
+    parseForegroundLine('\uFEFF{"hwnd":"1234","pid":88,"name":"r5apex","title":"Apex Legends","path":"D:\\\\Games\\\\r5apex.exe"}'),
+    { hwnd: '1234', pid: 88, name: 'r5apex', title: 'Apex Legends', path: 'D:\\Games\\r5apex.exe' },
   );
-  assert.deepEqual(parseForegroundLine('{"event":"restore","target":"1234","result":"ok"}'),
-    { event: 'restore', target: '1234', result: 'ok' });
   assert.equal(parseForegroundLine('Add-Type : 出错了'), null);
   assert.equal(parseForegroundLine('{坏的'), null);
 });
@@ -139,124 +126,4 @@ test('移到回收站用的 PowerShell 隐藏窗口启动', async () => {
   });
   assert.equal(seen.file, 'powershell.exe');
   assert.equal(seen.options.windowsHide, true);
-});
-
-// ---------- 防抢前台：比特浏览器打开窗口时抢走最前面，立刻切回原来的窗口 ----------
-
-const GAME = { event: 'foreground', hwnd: '1001', pid: 50, name: 'r5apex', title: 'Apex Legends', path: 'D:\\Games\\r5apex.exe', started: '2026-10-01T00:00:00.000Z' };
-const BIT_KERNEL = { event: 'foreground', hwnd: '2002', pid: 777, name: 'chrome', title: 'TikTok Studio', path: 'C:\\Users\\a\\AppData\\Roaming\\BitBrowser\\chrome-core\\chrome.exe', started: '2026-10-01T00:00:00.000Z' };
-const OTHER_KERNEL = { ...BIT_KERNEL, hwnd: '2003', pid: 888, path: 'C:\\SomeKernel\\chrome.exe' };
-const WECHAT = { event: 'foreground', hwnd: '3003', pid: 60, name: 'WeChat', title: '微信', path: 'C:\\Program Files\\Tencent\\WeChat\\WeChat.exe', started: '2026-10-01T00:00:00.000Z' };
-
-async function startedWatch(options = {}) {
-  const { calls, spawnImpl } = fakeSpawn();
-  const watch = createForegroundWatch({ platform: 'win32', spawnImpl, graceMs: 10, ...options });
-  const log = memoryLog();
-  const stopTracking = watch.track('A', log);
-  const proc = calls[0].proc;
-  const emit = async (o) => { proc.stdout.write(`${JSON.stringify(o)}\n`); await tick(); };
-  return { watch, log, proc, emit, stopTracking };
-}
-
-test('比特窗口抢到最前面时，立刻发命令切回打开前的窗口，并把结果记进日志', async () => {
-  const { watch, log, proc, emit } = await startedWatch();
-  await emit(GAME);
-  const guard = await watch.guardOpen(log);
-  await emit(BIT_KERNEL); // 打开过程中比特窗口跳到最前面
-  assert.deepEqual(proc.written, ['restore 1001\n'], '按程序位置认出是比特，马上切回游戏');
-  assert.ok(log.lines.some((l) => /\[防抢前台\].*正在切回原来的窗口：r5apex「Apex Legends」/.test(l)));
-  await emit({ event: 'restore', target: '1001', result: 'ok' });
-  assert.match(log.lines.at(-1), /\[防抢前台\] 已切回/);
-  await emit(GAME); // 切回后游戏重新在最前面，不再动作
-  guard.opened({ pid: 777 });
-  assert.equal(proc.written.length, 1);
-  watch.stop();
-});
-
-test('程序位置认不出时，用比特返回的进程号认出刚打开的窗口', async () => {
-  const { watch, log, proc, emit } = await startedWatch();
-  await emit(GAME);
-  const guard = await watch.guardOpen(log);
-  await emit(OTHER_KERNEL);
-  assert.equal(proc.written.length, 0, '还不知道比特内核的进程号，先不动');
-  guard.opened({ pid: 888 });
-  assert.deepEqual(proc.written, ['restore 1001\n'], '拿到进程号后认出就是它，切回');
-  watch.stop();
-});
-
-test('打开期间新启动的程序抢到最前面也切回（进程号拿不到时的兜底）', async () => {
-  const { watch, log, proc, emit } = await startedWatch();
-  await emit(GAME);
-  const guard = await watch.guardOpen(log);
-  guard.opened({});
-  await emit({ ...OTHER_KERNEL, started: new Date().toISOString() });
-  assert.deepEqual(proc.written, ['restore 1001\n']);
-  watch.stop();
-});
-
-test('你自己切到别的程序（不是比特、也不是新启动的）不会被拽回去', async () => {
-  const { watch, log, proc, emit } = await startedWatch();
-  await emit(GAME);
-  const guard = await watch.guardOpen(log);
-  guard.opened({ pid: 777 });
-  await emit(WECHAT);
-  await emit(WECHAT);
-  assert.equal(proc.written.length, 0);
-  assert.equal(log.lines.filter((l) => /不是比特浏览器，不处理/.test(l)).length, 1, '只记一次，方便排查');
-  watch.stop();
-});
-
-test('只在打开后的一段时间内保护；过时之后比特窗口在前面也不再切回', async () => {
-  const { watch, log, proc, emit } = await startedWatch();
-  await emit(GAME);
-  const guard = await watch.guardOpen(log, { windowMs: 20 });
-  guard.opened({ pid: 777 });
-  await new Promise((r) => setTimeout(r, 40));
-  await emit(BIT_KERNEL);
-  assert.equal(proc.written.length, 0);
-  watch.stop();
-});
-
-test('最多切回几次，不和比特来回抢个没完', async () => {
-  const { watch, log, proc, emit } = await startedWatch();
-  await emit(GAME);
-  const guard = await watch.guardOpen(log, { maxRestores: 2 });
-  guard.opened({ pid: 777 });
-  for (let i = 0; i < 4; i += 1) { await emit(BIT_KERNEL); await emit(GAME); }
-  assert.equal(proc.written.length, 2);
-  watch.stop();
-});
-
-test('原来最前面就是比特窗口（你在看某个号）时，不做任何切回', async () => {
-  const { watch, log, proc, emit } = await startedWatch();
-  await emit(BIT_KERNEL);
-  const guard = await watch.guardOpen(log);
-  guard.opened({ pid: 999 });
-  await emit({ ...BIT_KERNEL, hwnd: '4004', pid: 999 });
-  assert.equal(proc.written.length, 0);
-  watch.stop();
-});
-
-test('记录进程迟迟没报出前台窗口时不卡住打开流程，也不切回', async () => {
-  const { watch, log, proc } = await startedWatch();
-  const t0 = Date.now();
-  const guard = await watch.guardOpen(log, { readyTimeoutMs: 30 });
-  assert.ok(Date.now() - t0 < 1000);
-  guard.opened({ pid: 777 });
-  assert.equal(proc.written.length, 0);
-  watch.stop();
-});
-
-test('打开失败时可以安全结束保护；非 Windows 或关闭开关时什么都不做', async () => {
-  const { watch, log, proc, emit } = await startedWatch();
-  await emit(GAME);
-  const guard = await watch.guardOpen(log);
-  guard.stop();
-  await emit(BIT_KERNEL);
-  assert.equal(proc.written.length, 0);
-  assert.equal(typeof (await watch.guardOpen(log, { enabled: false })).opened, 'function');
-  watch.stop();
-  const linux = createForegroundWatch({ platform: 'linux' });
-  const g = await linux.guardOpen(log);
-  g.opened({ pid: 1 }); g.stop();
 });
