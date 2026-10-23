@@ -341,7 +341,8 @@ async function tickAccount(settings, account, adapters, { folderSynced = false }
 
     const adapter = adapters.get(account.browser);
     if (slot) activeSlots.set(account.name, slot);
-    stopForegroundRecord = foregroundWatch.track(account.name, log, { enabled: settings.foregroundWatch !== false });
+    // 默认关闭：原因已查明（比特打开窗口那一刻抢前台），以后要排查时在 settings.json 设 "foregroundWatch": true。
+    stopForegroundRecord = foregroundWatch.track(account.name, log, { enabled: settings.foregroundWatch === true });
     await processAccountOnce(account, settings, adapter, log, slot);
   } catch (err) {
     // 开浏览器/等页面时过点、尚未上传：不计失败，留到下一节点；已上传的不走此分支。

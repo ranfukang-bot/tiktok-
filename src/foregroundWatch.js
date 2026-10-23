@@ -11,7 +11,8 @@ import { createInterface } from 'node:readline';
 //
 // 实现：发布期间开一个隐藏的 PowerShell，每 250 毫秒问一次 Windows 最前面的窗口是谁，
 // 变了才输出一行 JSON。没有账号在发布时过一会儿自动退出，不常驻。
-// 可在 settings.json 里设 "foregroundWatch": false 关闭。
+// 结论：抢前台的是比特浏览器打开环境窗口的那一刻（比特客户端的行为）。用户不需要自动切回，
+// 所以这里只保留记录功能，默认关闭；以后要排查时在 settings.json 里设 "foregroundWatch": true 开启。
 
 export const FOREGROUND_WATCH_SCRIPT = [
   // 先把输出切成不带 BOM 的 UTF-8，否则中文窗口标题在中文 Windows 上会变乱码（同选择文件夹那次）。
