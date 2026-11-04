@@ -7,10 +7,10 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ ! -d "node_modules" ]; then
-  echo "第一次运行，正在安装依赖，请稍等（只需要一次）..."
-  npm install || { echo "依赖安装失败"; read -p "按回车关闭…"; exit 1; }
-fi
-
-echo "正在启动控制台，稍后会自动打开浏览器网页..."
-npm start
+# 先读完整个代码块，再执行可能替换本启动脚本的更新器。
+{
+  node tools/self-update.mjs || { read -p "按回车关闭…"; exit 1; }
+  echo "正在启动控制台，稍后会自动打开浏览器网页..."
+  npm start
+  exit $?
+}

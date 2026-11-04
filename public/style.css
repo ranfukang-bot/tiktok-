@@ -102,6 +102,10 @@ header {
   z-index: 20;
 }
 
+.console-heading { min-width: 0; }
+#current-version { margin-top: 3px; font-size: 12px; }
+#update-notice { margin-top: 4px; color: var(--amber); font-size: 12px; }
+
 header h1 {
   font-size: 15px;
   font-weight: 650;

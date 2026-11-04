@@ -27,7 +27,9 @@ export async function serverFixture() {
   writeFileSync(path.join(root,'config/settings.json'),JSON.stringify({minIntervalMs:1,maxIntervalMs:2,folderScanIntervalMs:10}));
   writeFileSync(path.join(root,'config/accounts.json'),'[]');
   const serverPath=path.join(root,'src/server.js');
-  writeFileSync(serverPath,readFileSync(serverPath,'utf8').replace("import open from 'open';",'const open = async () => {};'));
+  writeFileSync(serverPath,readFileSync(serverPath,'utf8')
+    .replace("import open from 'open';",'const open = async () => {};')
+    .replace('void versions.start();', '// 隔离测试不联网检查 GitHub。'));
   const probe=createServer(); probe.listen(0,'127.0.0.1'); await once(probe,'listening');
   const port=probe.address().port; await new Promise(r=>probe.close(r));
   const previous=process.env.PORT;process.env.PORT=String(port);
@@ -73,6 +75,16 @@ test('端口占用时仍能通过本机状态探测复用已有控制台',async(
     });
     assert.match(result.stdout,/控制台已经在运行/);
     assert.equal(result.stderr,'');
+  } finally {await f.close();}
+});
+
+test('版本接口只返回本机缓存，保持原有访问限制',async()=>{
+  const f=await serverFixture();
+  try {
+    const response=await fetch(`${f.url}/api/version`);
+    assert.equal(response.headers.get('cache-control'),'no-store');
+    assert.deepEqual(await response.json(),{current:{sha:null,date:null},latest:null,updateAvailable:false});
+    assert.equal((await rawRequest(`${f.url}/api/version`,{headers:{Host:'evil.example'}})).status,403);
   } finally {await f.close();}
 });
 

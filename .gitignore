@@ -12,3 +12,7 @@ diagnostics/output/
 # 隔离行为测试的临时副本（异常退出时也不能提交）。
 .scheduler-test-*/
 .confirmation-test-*/
+
+# 启动更新器的本地版本和依赖安装重试标记。
+.update-version
+.update-install-pending

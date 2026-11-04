@@ -960,7 +960,21 @@ function populateTimezones(currentValue) {
   if (sel) sel.innerHTML = timezoneOptionsHtml(currentValue);
 }
 
+async function refreshVersion() {
+  try {
+    const info = await api('GET', '/api/version');
+    const current = info.current;
+    document.getElementById('current-version').textContent = current.sha
+      ? `当前版本：${current.sha.slice(0, 7)} · ${current.date.slice(0, 10)}`
+      : '当前版本：未知（首次成功更新后显示）';
+    document.getElementById('update-notice').classList.toggle('hidden', !info.updateAvailable);
+  } catch { /* 网络重连时保留页面已显示的版本。 */ }
+}
+
 async function init() {
+  void refreshVersion();
+  // 只读取本机缓存；GitHub 请求由服务端统一每小时发一次。
+  setInterval(refreshVersion, 60_000);
   try {
     currentSettings = await api('GET', '/api/settings');
     populateTimezones(currentSettings.timezone || 'Asia/Jakarta');

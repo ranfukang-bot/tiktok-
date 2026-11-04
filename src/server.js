@@ -25,9 +25,11 @@ import { createAdapter } from './browserAdapters/index.js';
 import { sendTestNotification } from './notifier.js';
 import { screenProducts, loadVerdicts, saveVerdict } from './productScreen.js';
 import { loadJoblist, saveJoblist, importFromCsv, mergeJoblist } from './joblist.js';
+import { createVersionMonitor, isConsoleStatus } from './updateInfo.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8765;
+const versions = createVersionMonitor({ root: path.join(__dirname, '..') });
 
 ensureConfigFiles();
 
@@ -58,6 +60,11 @@ app.get('/api/status', (req, res) => {
   } catch (err) {
     handleError(res, err);
   }
+});
+
+app.get('/api/version', async (req, res) => {
+  await versions.ready();
+  res.set('Cache-Control', 'no-store').json(versions.snapshot());
 });
 
 app.post('/api/orchestrator/start', (req, res) => {
@@ -371,12 +378,14 @@ app.get('/api/logs/stream', (req, res) => {
 });
 
 export const server = app.listen(PORT, '127.0.0.1', () => {
+  void versions.start();
   const url = `http://127.0.0.1:${PORT}`;
   console.log(`TikTok 批量发布控制台已启动: ${url}`);
   open(url).catch(() => {
     console.log('没能自动打开浏览器，请手动访问上面这个地址');
   });
 });
+server.on('close', () => versions.stop());
 
 // 双击启动脚本时可能已有控制台在运行。确认是本应用后复用它，避免端口冲突崩溃。
 server.on('error', async (err) => {
@@ -385,8 +394,7 @@ server.on('error', async (err) => {
     try {
       const response = await fetch(`${url}/api/status`, { signal: AbortSignal.timeout(3000) });
       const status = response.ok ? await response.json() : null;
-      if (status && typeof status.running === 'boolean' && Array.isArray(status.accounts) &&
-          Object.hasOwn(status, 'lastTickAt') && Object.hasOwn(status, 'settingsError')) {
+      if (isConsoleStatus(status)) {
         console.log(`控制台已经在运行，正在打开现有页面：${url}`);
         await open(url).catch(() => console.log(`请手动打开：${url}`));
         return;
