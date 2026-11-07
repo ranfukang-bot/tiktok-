@@ -100,6 +100,7 @@ export function installTkqInPage(config) {
   }
 
   let attachedProduct = null;
+  let readyContentFallbackGranted = false;
 
   function getWorkflowStage(root) {
     if (!root) return null;
@@ -1002,13 +1003,17 @@ export function installTkqInPage(config) {
     ? Math.min(checksOptions.timeoutMs, 60 * 60 * 1000) : 30 * 60 * 1000;
   const restartAfterMs = Number.isFinite(checksOptions.restartAfterMs) && checksOptions.restartAfterMs >= 0
     ? checksOptions.restartAfterMs : 15 * 60 * 1000;
+  const contentReadyFallbackAfterMs = Number.isFinite(checksOptions.contentReadyFallbackAfterMs)
+    ? (checksOptions.contentReadyFallbackAfterMs === 0 ? 0 : Math.min(Math.max(checksOptions.contentReadyFallbackAfterMs, 0), 60 * 60 * 1000))
+    : 20 * 60 * 1000;
 
   async function waitForChecksPassAndAssertSafe(timeoutMs = configuredWaitMs) {
     assertProductPickerClosed('等待发布前检查');
-    log(`等待音乐版权和内容检查双绿（最多${Math.ceil(timeoutMs / 60000)}分钟；不会超时放行）…`);
+    log(`等待音乐版权和内容检查（最多${Math.ceil(timeoutMs / 60000)}分钟；内容检查若持续停在灰色待检查状态，将在${Math.ceil(contentReadyFallbackAfterMs / 60000)}分钟后按平台可发布状态继续）…`);
     const started = Date.now();
     const deadline = started + timeoutMs;
     let passedSince = null;
+    let readyContentSince = null;
     let previous = '';
     let lastProgressAt = started;
     const enableTried = new Set(); // 每个开关只自动打开一次，避免跟页面来回拉锯
@@ -1030,6 +1035,20 @@ export function installTkqInPage(config) {
       // 红/黄是真的没通过，立刻停——这条视频本身有问题，重试多少次都一样。
       if (state.checks.some((check) => check.state === 'blocked')) {
         throw new Error('发布安全检查未通过：' + checkSummary(state));
+      }
+      const contentCheck = state.checks.find(check => check.name === 'content');
+      const musicCheck = state.checks.find(check => check.name === 'music');
+      if (contentReadyFallbackAfterMs > 0 && contentCheck?.state === 'ready' && musicCheck?.state === 'success') {
+        readyContentSince ??= Date.now();
+        const button = getPostButton();
+        if (Date.now() - readyContentSince >= contentReadyFallbackAfterMs &&
+            getUploadState().state === 'success' && button && isEnabled(button)) {
+          readyContentFallbackGranted = true;
+          log(`内容资格检查持续${Math.ceil(contentReadyFallbackAfterMs / 60000)}分钟没有结果；音乐版权已绿色、TikTok发布按钮可用，继续发布。TikTok仍可能限制此视频进入For You推荐`);
+          return true;
+        }
+      } else {
+        readyContentSince = null;
       }
       for (const check of state.checks) {
         if (['ready', 'checking'].includes(check.state)) awaitingFresh.delete(check.name);
@@ -1116,7 +1135,11 @@ export function installTkqInPage(config) {
   function assertReadyToPublish() {
     checkForAppCrash();
     assertProductPickerClosed('发布');
-    assertChecksPassed();
+    const currentChecks = getChecksState();
+    const safeReadyFallback = readyContentFallbackGranted &&
+      currentChecks.checks.find(check => check.name === 'music')?.state === 'success' &&
+      currentChecks.checks.find(check => check.name === 'content')?.state === 'ready';
+    if (!currentChecks.passed && !safeReadyFallback) assertChecksPassed();
     assertCaptionSafe('点击发布前最后检查');
     if (getUploadState().state !== 'success') throw new Error('发布安全检查未通过：上传未完成');
     if (!switchIsOn(getAiSwitch())) throw new Error('发布安全检查未通过：AI声明未开启');

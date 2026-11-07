@@ -343,10 +343,15 @@ PushPlus 显示“已受理”只代表请求被接收，**不保证手机送达
 重启后必须观察到新的检查过程，再等双绿稳定，绝不会用旧绿或超时结果直接发布。
 每分钟记录已等待时长和两项状态，方便判断到底哪项卡住。
 
+如果音乐版权已明确绿色、内容检查一直停在灰色 `ready`（不是转圈审核，也不是红黄风险），
+上传已完成且 TikTok 发布按钮仍可用，默认等待 20 分钟后继续发布，避免平台长期不返回资格检查结果时
+每轮白等 30 分钟。该兜底不会覆盖任何红黄风险或 `checking` 状态；TikTok 之后仍可能限制视频进入 For You 推荐。
+设置 `checks.contentReadyFallbackAfterMs: 0` 可关闭兜底，默认值为 1200000 毫秒。
+
 30 分钟后若仍明确在等待，自动按现有 `retryBackoffMs` 退避（默认 5/15/40 分钟），
 下一轮重开上传页重新处理这条视频；这一步会重新上传，且仍受发布时间节点限制。
 内容风险警告、未知结构、重启后只剩旧绿或已点击发布的情况仍暂停，避免重复或错误发布。
-可在 `settings.json` 中配置 `checks: { "timeoutMs": 1800000, "restartAfterMs": 900000 }`；
+可在 `settings.json` 中配置 `checks: { "timeoutMs": 1800000, "restartAfterMs": 900000, "contentReadyFallbackAfterMs": 1200000 }`；
 `restartAfterMs: 0` 关闭开关重启，等待上限最多 60 分钟。旧配置缺省自动采用新默认值。
 
 内容检查有两种外观相似的红色状态：`status-error` 带“重试”入口表示检查服务出错，
@@ -362,7 +367,7 @@ PushPlus 显示“已受理”只代表请求被接收，**不保证手机送达
 上传页选文件控件最多等 90 秒。仅在没有已选视频、没有文件控件、仍处于上传页时重载一次；
 尚未选择文件，不会由这个恢复步骤造成重传。再次失败会附带路径、页面标题和控件信息。
 页面步骤日志使用有上限的内存缓冲，每秒读取一次，即使指纹浏览器不发送 console 事件，
-控制台也能显示检查进度。`/api/status` 的 `checksRecoveryPolicy=service-error-retry-v2`
+控制台也能显示检查进度。`/api/status` 的 `checksRecoveryPolicy=content-ready-fallback-v1`
 与 `pageLogPolicy=polled-buffer-v1` 可确认后台已加载此版本。
 
 - **"发布结果不确定"**：点了发布按钮后一直没检测到跳转成功，为了不重复发布，脚本会暂停
