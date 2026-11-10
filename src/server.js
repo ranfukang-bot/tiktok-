@@ -1,7 +1,8 @@
 import express from 'express';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
+import { validateProblemFolder, validateAccountProblemFolders, productMoveBreaker } from './problemVideos.js';
 import { pickFolder } from './pickFolder.js';
 import open from 'open';
 import {
@@ -109,6 +110,9 @@ app.put('/api/settings', (req, res) => {
     }
     // 全局表单可能持有旧快照，分组时区只允许由专用接口更新。
     settings.phoneGroupTimezones = loadSettings().phoneGroupTimezones;
+    delete settings.problemFolder;
+    settings.productMoveBreaker = productMoveBreaker(settings.productMoveBreaker);
+    validateAccountProblemFolders(settings, loadAllAccounts());
     saveSettings(settings);
     res.json({ ok: true });
   } catch (err) {
@@ -158,12 +162,14 @@ app.put('/api/accounts', (req, res) => {
       if (names.has(account.name)) throw new Error(`账号名称重复: ${account.name}`);
       names.add(account.name);
       if (!account.videoFolder || !account.videoFolder.trim()) throw new Error(`账号 "${account.name}" 没有填视频文件夹路径`);
+      if (account.problemFolder !== undefined) account.problemFolder = String(account.problemFolder ?? '').trim();
       if (account.browser === 'adspower' && !account.profileId) throw new Error(`账号 "${account.name}" 是AdsPower但没填环境ID`);
       if (account.browser === 'hubstudio' && !account.containerCode) throw new Error(`账号 "${account.name}" 是Hubstudio但没填环境ID`);
       if (account.browser === 'bitbrowser' && !account.browserId) throw new Error(`账号 "${account.name}" 是比特浏览器但没填环境ID`);
     }
 
     validateAccountNames(accounts);
+    validateAccountProblemFolders(loadSettings(), accounts);
     const previous = loadAllAccounts();
     const oldNames = new Set(previous.map(a => a.name));
     const removed = new Set(previous.filter(a => !names.has(a.name)).map(a => a.name));
@@ -289,6 +295,20 @@ app.post('/api/pick-folder', async (req, res) => {
     res.json({ path: await pickFolder() });
   } catch (err) {
     res.status(500).json({ error: `无法打开文件夹选择框: ${err.message}` });
+  }
+});
+
+app.post('/api/accounts/:name/open-problem-folder', async (req, res) => {
+  try {
+    const accounts = loadAllAccounts();
+    const account = accounts.find(item => item.name === req.params.name);
+    const folder = req.body?.path ?? account?.problemFolder;
+    const dir = validateProblemFolder(loadSettings(), accounts, folder);
+    if (!dir || !statSync(dir).isDirectory()) throw new Error('请先选择已存在的问题视频文件夹');
+    await open(dir);
+    res.json({ ok: true });
+  } catch (err) {
+    handleError(res, err);
   }
 });
 

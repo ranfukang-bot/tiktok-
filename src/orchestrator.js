@@ -2,6 +2,7 @@ import { chromium } from 'playwright-core';
 import {
   loadSettings,
   loadAccounts,
+  loadAllAccounts,
   resolveText,
   resolveHashtags,
   resolveDailyLimit,
@@ -13,7 +14,8 @@ import { createLogger } from './logger.js';
 import { getState, setState, pause, clearFailures } from './stateStore.js';
 import { scanDirectory, syncFilesIntoQueue, deletePublishedFile } from './folderScanner.js';
 import { runOneUploadCycle } from './browser/tiktokStudio.js';
-import { classifyError, retryDelayMs, maxRetries } from './errorPolicy.js';
+import { classifyError, retryDelayMs, maxRetries, productIssueReason } from './errorPolicy.js';
+import { moveProductVideos, flushMovedVideoCsv, validateProblemFolder, productMoveBreaker, PRODUCT_ISSUE_LABELS } from './problemVideos.js';
 import { notify } from './notifier.js';
 import { watchForStall, DEFAULT_CYCLE_ALERT_MS, SCHEDULER_ALERT_MS } from './stallAlert.js';
 import { routeInbox } from './inbox.js';
@@ -128,33 +130,70 @@ async function findOrOpenStudioPage(browser) {
   return pages[0] || (await ctx.newPage());
 }
 
-async function processAccountOnce(account, settings, adapter, log, slot = null) {
-  const state = getState(account.name);
-  const timezone = resolveTimezone(settings, account);
-  rolloverIfNewDay(state, timezone);
-  const eligibleIndex = nextPublishableIndex(state, timezone);
-  if (eligibleIndex < 0) return;
-  const nextIdx = state.doneIndex + 1;
-  // 只把选中的未发布视频提到待发布队首，不能直接跳 doneIndex，否则会丢掉被跳过的库存。
-  if (eligibleIndex !== nextIdx) {
-    const [selected] = state.items.splice(eligibleIndex, 1);
-    state.items.splice(nextIdx, 0, selected);
+async function moveBeforePublish(account, settings, item, err, log, accounts, moveOptions) {
+  const reason = productIssueReason(err);
+  if (err.publishAttempted !== false || !reason || !account.problemFolder?.trim()) return null;
+  const fresh = getState(account.name);
+  if (fresh.paused || Number.isInteger(fresh.pendingIndex)) return null;
+  const validate = () => {
+    const current = loadSettings();
+    const configured = loadAllAccounts();
+    const latest = configured.find(entry => entry.name === account.name);
+    if (!latest || latest.enabled === false || latest.problemFolder?.trim() !== account.problemFolder.trim() ||
+        latest.videoFolder !== account.videoFolder) {
+      throw new Error('处理期间账号或视频文件夹设置已更改');
+    }
+    const all = [...accounts, account, ...configured];
+    validateProblemFolder(settings, all, account.problemFolder);
+    return validateProblemFolder(current, all, account.problemFolder);
+  };
+  try {
+    validate();
+    const limit = productMoveBreaker(settings.productMoveBreaker);
+    const ids = new Set(fresh.consecutiveProductMoves);
+    ids.add(item.productId);
+    if (ids.size >= limit) {
+      const reason = `连续${limit}个不同商品挂车失败（没库存/找不到/不可用），更可能是橱窗没加载、挂车权限或页面问题，已停下。前面移走的视频在问题文件夹里。`;
+      log.error(reason);
+      await pauseAndNotify(account, settings, { reason, code: 'product_move_breaker', log });
+      return { paused: true };
+    }
+    const items = fresh.items.slice(fresh.doneIndex + 1).filter(video => video.productId === item.productId);
+    const moved = await moveProductVideos({ account, productId: item.productId, reason, items, validate, log }, moveOptions);
+    const state = getState(account.name);
+    // 移动期间点了「继续」时尊重用户清零。
+    if (JSON.stringify(state.consecutiveProductMoves) === JSON.stringify(fresh.consecutiveProductMoves)) {
+      state.consecutiveProductMoves = [...ids];
+      setState(account.name, state);
+    }
+    await syncAccountFolder(account, settings, log, { quiet: true });
+    log.info(`商品ID ${item.productId} ${PRODUCT_ISSUE_LABELS[reason]}，已把 ${moved.count} 条视频挪到 ${moved.directory}`);
+    return { filename: item.filename, label: PRODUCT_ISSUE_LABELS[reason] };
+  } catch (moveError) {
+    // 一组文件可能已经有部分移完；保留已写记录，并同步剩余队列。
+    await syncAccountFolder(account, settings, log, { quiet: true }).catch(() => {});
+    throw new Error(`${classifyError(err).reason} 问题视频没能全部移走：${moveError.message}`, { cause: moveError });
   }
-  setState(account.name, state);
-  const item = state.items[nextIdx];
-  if (!item) return;
+}
 
-  log.info(`账号到点，开始处理第 ${nextIdx + 1}/${state.items.length} 条: ${item.relativePath}`);
+function eligibleVideo(state, settings, account, timezone) {
+  if (rolloverIfNewDay(state, timezone)) setState(account.name, state);
+  if (!hasQuotaRemaining(state, resolveDailyLimit(settings, account))) return -1;
+  return nextPublishableIndex(state, timezone);
+}
 
-  // 一旦置为true，说明这轮已经可能点过发布按钮了，任何后续错误都不许自动重试
-  let publishAttempted = false;
-  // 只有确认发布成功才关窗口。别的情况(报错、结果不确定)都要把窗口留着——
-  // 那些情况的处理办法就是"人去打开这个号看一眼"，窗口关了就没得看了。
-  let publishConfirmed = false;
+async function processAccountOnce(account, settings, adapter, log, slot, accounts, {
+  connectBrowser = (endpoint) => chromium.connectOverCDP(endpoint, cdpConnectOptions(endpoint)),
+  uploadCycle = runOneUploadCycle, moveOptions, waitBetweenVideos = sleep,
+} = {}, shouldContinue = () => true) {
+  const timezone = resolveTimezone(settings, account);
+  if (eligibleVideo(getState(account.name), settings, account, timezone) < 0) return;
 
   const { wsEndpoint, reused } = await adapter.startProfile(account);
   if (reused) log.info('已复用本账号正在运行的浏览器环境，跳过重复启动');
-  const browser = await chromium.connectOverCDP(wsEndpoint, cdpConnectOptions(wsEndpoint));
+  const browser = await connectBrowser(wsEndpoint);
+  let closeWindow = false;
+  let moved = null;
   try {
     const page = await findOrOpenStudioPage(browser);
     const config = {
@@ -163,114 +202,144 @@ async function processAccountOnce(account, settings, adapter, log, slot = null) 
       checks: settings.checks,
     };
 
-    let result;
-    try {
-      result = await runOneUploadCycle({
-        page,
-        account,
-        item,
-        config,
-        log,
-        beforeUpload: () => {
-          // 开浏览器、等页面可能耗时，必须在真正提交视频文件前再检查准入。
-          assertSlotCanStartUpload(slot, Date.now());
-          assertProductCanPublish(getState(account.name), item.productId, timezone);
-        },
-        beforePublishClick: async () => {
-          // 节点只限制开始上传。已开始的这一条通过全部安全检查后，允许跨点完成。
-          if (slot && Date.now() >= slot.endMs) {
-            log.info(`已在 ${slot.start}-${slot.end} 节点内开始上传，虽然已过截止时间，仍完成本条发布（安全检查已通过）`);
-          }
-          const s = getState(account.name);
-          assertProductCanPublish(s, item.productId, timezone);
-          publishAttempted = true;
-          s.pendingIndex = nextIdx;
-          s.pendingSince = Date.now();
-          // 记下这一条是为哪个节点发的：万一发布结果不确定，人可能过几个小时才来
-          // 确认，那时候得按【当初这个】节点记账，不能占掉确认那一刻的节点。
-          s.pendingSlot = slot ? { key: slot.key, dayKey: slot.dayKey, start: slot.start, end: slot.end } : null;
-          setState(account.name, s);
-        },
-      });
-    } catch (err) {
-      // 把"是否已经点过发布"这个关键信息带给上层的错误分类逻辑
-      err.publishAttempted = publishAttempted;
-      throw err;
-    }
-
-    const latest = getState(account.name);
-    if (result.published) {
-      publishConfirmed = true;
-      latest.doneIndex = nextIdx;
-      // 在清掉 pendingSince 之前按实际发布尝试日期记账，跨午夜确认不扣新一天额度。
-      const countedToday = recordConfirmedQuota(latest, timezone, Date.now(), item.productId);
-      latest.pendingIndex = null;
-      latest.pendingSince = null;
-      // 时间节点模式下由节点本身控制什么时候发，不能再叠一个随机间隔：
-      // 那个间隔可能一睡就是两三个小时，足以让账号整个错过下一个节点。
-      latest.nextTime = slot ? Date.now() : Date.now() + randomInterval(settings.minIntervalMs, settings.maxIntervalMs);
-      // 跨天了就别记了：这个节点属于昨天，记下来会把今天同名的节点白白占掉
-      if (slot && countedToday && slot.dayKey === latest.publishDayKey) {
-        latest.slotsUsedToday = [...new Set([...(latest.slotsUsedToday || []), slot.key])];
+    while (!moved || shouldContinue()) {
+      const state = getState(account.name);
+      if (state.paused || Number.isInteger(state.pendingIndex)) break;
+      const eligibleIndex = eligibleVideo(state, settings, account, timezone);
+      if (eligibleIndex < 0) {
+        closeWindow = Boolean(moved);
+        break;
       }
-      latest.pendingSlot = null;
-      setState(account.name, latest);
-      clearFailures(account.name);
 
-      const dailyLimit = resolveDailyLimit(settings, account);
-      if (!hasQuotaRemaining(latest, dailyLimit)) {
-        log.info(
-          `本条发布完成，今天已经发了 ${latest.publishedToday}/${dailyLimit} 条，额度用完，` +
-            `等 ${resolveTimezone(settings, account)} 过完这一天再继续`
-        );
+      const nextIdx = state.doneIndex + 1;
+      // 提到待发队首，不能把跳过的库存标成已发布。
+      if (eligibleIndex !== nextIdx) {
+        const [selected] = state.items.splice(eligibleIndex, 1);
+        state.items.splice(nextIdx, 0, selected);
+      }
+      setState(account.name, state);
+      const item = state.items[nextIdx];
+      if (moved) {
+        log.info(`已挪走 ${moved.filename}（${moved.label}），立刻在同一个窗口处理下一条：${item.relativePath}`);
       } else {
-        log.info(
-          slot
-            ? `本条发布完成（${slot.key} 这个时间节点已用掉），等下一个时间节点`
-            : `本条发布完成，下一条将在约 ${fmtMinutes(latest.nextTime - Date.now())} 分钟后开始`
-        );
+        log.info(`账号到点，开始处理第 ${nextIdx + 1}/${state.items.length} 条: ${item.relativePath}`);
       }
-      if (settings.deleteAfterPublish !== false) {
-        await deletePublishedFile(account.videoFolder, item, log);
+
+      let publishAttempted = false;
+      let result;
+      try {
+        result = await uploadCycle({
+          page,
+          account,
+          item,
+          config,
+          log,
+          beforeUpload: () => {
+            // 开浏览器、等页面可能耗时，必须在真正提交视频文件前再检查准入。
+            if (!moved) assertSlotCanStartUpload(slot, Date.now());
+            const latest = getState(account.name);
+            if (rolloverIfNewDay(latest, timezone)) setState(account.name, latest);
+            assertProductCanPublish(latest, item.productId, timezone);
+          },
+          beforePublishClick: async () => {
+            // 第一条必须在节点内开始；本轮补发也通过同一套安全检查。
+            if (slot && Date.now() >= slot.endMs) {
+              log.info(moved
+                ? `已过 ${slot.start}-${slot.end} 节点截止时间，仍在原轮次完成补发（安全检查已通过）`
+                : `已在 ${slot.start}-${slot.end} 节点内开始上传，虽然已过截止时间，仍完成本条发布（安全检查已通过）`);
+            }
+            const s = getState(account.name);
+            assertProductCanPublish(s, item.productId, timezone);
+            publishAttempted = true;
+            s.pendingIndex = nextIdx;
+            s.pendingSince = Date.now();
+            // 记下这一条是为哪个节点发的：万一发布结果不确定，人可能过几个小时才来
+            // 确认，那时候得按【当初这个】节点记账，不能占掉确认那一刻的节点。
+            s.pendingSlot = slot ? { key: slot.key, dayKey: slot.dayKey, start: slot.start, end: slot.end } : null;
+            setState(account.name, s);
+          },
+        });
+      } catch (err) {
+        // 点过发布的错误仍归为发布结果不确定，绝不移走视频。
+        err.publishAttempted = publishAttempted;
+        const outcome = await moveBeforePublish(account, settings, item, err, log, accounts, moveOptions);
+        if (!outcome) throw err;
+        if (outcome.paused) break;
+        moved = outcome;
+        const current = getState(account.name);
+        if (current.paused || Number.isInteger(current.pendingIndex)) break;
+        if (eligibleVideo(current, settings, account, timezone) < 0) {
+          closeWindow = true;
+          break;
+        }
+        if (shouldContinue()) await waitBetweenVideos(randomInterval(10000, 30000));
+        continue;
       }
-    } else {
-      await pauseAndNotify(account, settings, {
-        reason: '点击发布后没等到跳转，这一条到底发出去没有不确定，已停下等你确认（不会自动重试，避免同一条发两遍）',
-        code: 'uncertain_publish',
-        howToFix: '打开这个账号的指纹浏览器看一眼TikTok内容列表，然后在控制台网页上点"确认已发布"或"确认未发布，重试"',
-        log,
-      });
+
+      const latest = getState(account.name);
+      if (result.published) {
+        closeWindow = true;
+        latest.doneIndex = nextIdx;
+        // 在清掉 pendingSince 之前按实际发布尝试日期记账，跨午夜确认不扣新一天额度。
+        const countedToday = recordConfirmedQuota(latest, timezone, Date.now(), item.productId);
+        latest.pendingIndex = null;
+        latest.pendingSince = null;
+        // 时间节点模式下由节点本身控制什么时候发，不能再叠一个随机间隔：
+        // 那个间隔可能一睡就是两三个小时，足以让账号整个错过下一个节点。
+        latest.nextTime = slot ? Date.now() : Date.now() + randomInterval(settings.minIntervalMs, settings.maxIntervalMs);
+        // 跨天了就别记了：这个节点属于昨天，记下来会把今天同名的节点白白占掉
+        if (slot && countedToday && slot.dayKey === latest.publishDayKey) {
+          latest.slotsUsedToday = [...new Set([...(latest.slotsUsedToday || []), slot.key])];
+        }
+        latest.pendingSlot = null;
+        setState(account.name, latest);
+        clearFailures(account.name);
+
+        const dailyLimit = resolveDailyLimit(settings, account);
+        if (!hasQuotaRemaining(latest, dailyLimit)) {
+          log.info(
+            `本条发布完成，今天已经发了 ${latest.publishedToday}/${dailyLimit} 条，额度用完，` +
+              `等 ${resolveTimezone(settings, account)} 过完这一天再继续`
+          );
+        } else {
+          log.info(
+            slot
+              ? `本条发布完成（${slot.key} 这个时间节点已用掉），等下一个时间节点`
+              : `本条发布完成，下一条将在约 ${fmtMinutes(latest.nextTime - Date.now())} 分钟后开始`
+          );
+        }
+        if (settings.deleteAfterPublish !== false) {
+          await deletePublishedFile(account.videoFolder, item, log);
+        }
+      } else {
+        await pauseAndNotify(account, settings, {
+          reason: '点击发布后没等到跳转，这一条到底发出去没有不确定，已停下等你确认（不会自动重试，避免同一条发两遍）',
+          code: 'uncertain_publish',
+          howToFix: '打开这个账号的指纹浏览器看一眼TikTok内容列表，然后在控制台网页上点"确认已发布"或"确认未发布，重试"',
+          log,
+        });
+      }
+      break; // 一轮最多确认发布一条。
     }
   } finally {
-    // 先断开CDP连接，再让指纹浏览器客户端把这个环境正经关掉。
-    // 顺序不能反：browser.close() 只是断开我们这端的连接，窗口还开着，
-    // 真正释放那一千多MB内存的是 stopProfile。
+    // 断开 CDP 后，仅在发布成功或移完没有可发视频时关闭窗口。
     await browser.close().catch(() => {});
-
-    // ⚠️ 这个 finally 里【绝对不能用 return】：finally 里的 return 会把正在往上抛的
-    // 异常整个吞掉，报错就再也传不到 handleAccountError，账号既不会暂停也不会通知你。
-    // 所以下面全用 if/else 分支。
     if (settings.closeProfileAfterCycle !== false) {
-      if (!publishConfirmed) {
-        // 只在确认发布成功之后才关。出错、或者发布结果不确定的时候，处理办法本来就是
-        // "人打开这个号去看一眼"(看内容列表到底发出去没有、看是不是哪个检查开关被关了)，
-        // 这时候关掉窗口等于把人要看的东西收走了。留着的那一千多MB是值的。
+      if (!closeWindow) {
         log.info('这一轮没有确认发布成功，保留指纹浏览器窗口，方便你打开看一眼');
       } else {
         try {
           await adapter.stopProfile(account);
           log.info('已关闭该账号的指纹浏览器窗口，释放内存');
         } catch (err) {
-          // 关不掉不影响这一条的发布结果，下一轮开窗口时指纹浏览器会自己处理已开着的环境，
-          // 所以只提醒一句，不按失败处理、更不能因此把账号暂停。
-          log.warn(`关闭指纹浏览器环境失败(不影响发布结果): ${err.message}`);
+          log.warn(`关闭指纹浏览器环境失败：${err.message}`);
         }
       }
     }
   }
 }
 
-async function tickAccount(settings, account, adapters, { folderSynced = false } = {}) {
+async function tickAccount(settings, account, adapters, { folderSynced = false, accounts = [account], runtime, shouldContinue } = {}) {
   // 必须在第一个 await（扫目录）之前占用，且覆盖错误分类、通知、收尾。
   if (processingAccounts.has(account.name)) return;
   processingAccounts.add(account.name);
@@ -343,7 +412,7 @@ async function tickAccount(settings, account, adapters, { folderSynced = false }
     if (slot) activeSlots.set(account.name, slot);
     // 默认关闭：原因已查明（比特打开窗口那一刻抢前台），以后要排查时在 settings.json 设 "foregroundWatch": true。
     stopForegroundRecord = foregroundWatch.track(account.name, log, { enabled: settings.foregroundWatch === true });
-    await processAccountOnce(account, settings, adapter, log, slot);
+    await processAccountOnce(account, settings, adapter, log, slot, accounts, runtime, shouldContinue);
   } catch (err) {
     // 开浏览器/等页面时过点、尚未上传：不计失败，留到下一节点；已上传的不走此分支。
     if (err.slotExpired) {
@@ -406,8 +475,9 @@ async function handleAccountError(account, settings, err, log) {
 }
 
 // 同一批次内的账号各自独立(各自的浏览器环境、各自的状态文件)，可以放心并发跑。
-export async function tick(settings, accounts, adapters) {
-  await Promise.all(accounts.map((account) => tickAccount(settings, account, adapters)));
+export async function tick(settings, accounts, adapters, runtime) {
+  flushMovedVideoCsv(createLogger('问题视频'));
+  await Promise.all(accounts.map((account) => tickAccount(settings, account, adapters, { accounts, runtime })));
 }
 
 function buildAdapters(settings, accounts) {
@@ -484,6 +554,7 @@ export async function tickAll(settings, accounts, options = {}) {
 
 async function scanAndDispatch(settings, accounts, { shouldContinue = () => true } = {}) {
   if (!shouldContinue()) return;
+  flushMovedVideoCsv(createLogger('问题视频'));
   await runInbox(settings, accounts);
   const adapters = buildAdapters(settings, accounts);
   const candidates = [];
@@ -534,7 +605,7 @@ async function scanAndDispatch(settings, accounts, { shouldContinue = () => true
   for (const { account } of candidates) {
     if (!shouldContinue() || processingAccounts.size >= concurrency) break;
     // tickAccount 在第一个 await 前占锁。异常兜底，后台任务不能产生未处理拒绝。
-    void tickAccount(settings, account, adapters, { folderSynced: true }).catch(err => {
+    void tickAccount(settings, account, adapters, { folderSynced: true, accounts, shouldContinue }).catch(err => {
       createLogger(account.name).error(`账号处理收尾失败：${err.message}`);
     });
   }

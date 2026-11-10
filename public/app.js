@@ -257,6 +257,7 @@ function renderAccounts() {
       }
     }
     if (enabled) actions.push(`<button data-action="scan" data-name="${escapeAttr(account.name)}">立即扫描</button>`);
+    if (account.problemFolder) actions.push(`<button data-action="open-problem-folder" data-name="${escapeAttr(account.name)}">打开问题视频文件夹</button>`);
     actions.push(`<button data-action="edit" data-idx="${idx}">编辑</button>`);
 
     // 三层结构：账号名+状态一行(最显眼) / 路径进度这些细节一行(弱化) / 操作按钮一行
@@ -271,6 +272,7 @@ function renderAccounts() {
         ${progressHtml}
         ${quotaBadge}
         ${timezoneBadge}
+        ${runtime?.movedToday > 0 ? `<span class="tag">今天移走 ${runtime.movedToday} 条</span>` : ''}
         ${runtime && runtime.scheduleMode === 'slots' ? `<span class="tag">今日错过 ${runtime.missedSlotsToday || 0} 个节点</span>` : ''}
       </div>
       <div class="ac-path" title="${escapeAttr(account.videoFolder)}">${escapeHtml(account.videoFolder)}</div>
@@ -303,6 +305,10 @@ document.getElementById('accounts-list').addEventListener('click', async (e) => 
       return;
     }
     const name = btn.dataset.name;
+    if (action === 'open-problem-folder') {
+      await api('POST', `/api/accounts/${encodeURIComponent(name)}/open-problem-folder`);
+      return;
+    }
     if (action === 'scan') {
       btn.disabled = true;
       btn.textContent = '扫描中…';
@@ -349,6 +355,7 @@ function openAccountModal(idx) {
   document.getElementById('a-browser').value = account.browser || 'bitbrowser';
   document.getElementById('a-profileid').value = profileIdOf(account);
   document.getElementById('a-folder').value = account.videoFolder || '';
+  document.getElementById('a-problem-folder').value = account.problemFolder || '';
   document.getElementById('a-hashtags').value = (account.hashtagKeywords || ['fyp', 'tiktok', 'tiktokshop']).join(',');
 
   updateBrowserFields();
@@ -408,13 +415,24 @@ document.getElementById('a-browser').addEventListener('change', updateBrowserFie
 document.getElementById('btn-add-account').addEventListener('click', () => openAccountModal(null));
 document.getElementById('a-cancel-btn').addEventListener('click', closeAccountModal);
 
-document.getElementById('a-browse-btn').addEventListener('click', async () => {
+async function pickFolderInto(inputId) {
   try {
     const data = await api('POST', '/api/pick-folder');
-    if (data.path) document.getElementById('a-folder').value = data.path;
+    if (data.path) document.getElementById(inputId).value = data.path;
   } catch (err) {
     alert(err.message);
   }
+}
+
+document.getElementById('a-browse-btn').addEventListener('click', () => pickFolderInto('a-folder'));
+document.getElementById('a-pick-problem-folder').addEventListener('click', () => pickFolderInto('a-problem-folder'));
+document.getElementById('a-open-problem-folder').addEventListener('click', async () => {
+  try {
+    const name = document.getElementById('a-original-name').value || '新账号';
+    await api('POST', `/api/accounts/${encodeURIComponent(name)}/open-problem-folder`, {
+      path: document.getElementById('a-problem-folder').value.trim(),
+    });
+  } catch (err) { alert(err.message); }
 });
 
 document.getElementById('a-delete-btn').addEventListener('click', async () => {
@@ -451,6 +469,7 @@ accountForm.addEventListener('submit', async (e) => {
     phoneGroup: document.getElementById('a-phone-group').value.trim(),
     browser,
     videoFolder: document.getElementById('a-folder').value.trim(),
+    problemFolder: document.getElementById('a-problem-folder').value.trim(),
     enabled: previous?.enabled !== false,
     hashtagKeywords: splitList(document.getElementById('a-hashtags').value),
   };
@@ -743,6 +762,7 @@ function fillSettingsForm(settings) {
   document.getElementById('s-daily-limit').value = settings.dailyPublishLimit ?? 0;
   document.getElementById('s-timezone').value = settings.timezone || 'Asia/Jakarta';
   document.getElementById('s-inbox').value = settings.inboxFolder || '';
+  document.getElementById('s-product-move-breaker').value = settings.productMoveBreaker ?? 3;
 
   const window = settings.postingWindow || {};
   document.getElementById('s-window-start').value = window.startHour ?? 12;
@@ -798,6 +818,7 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
   settings.dailyPublishLimit = Number(document.getElementById('s-daily-limit').value) || 0;
   settings.timezone = document.getElementById('s-timezone').value;
   settings.inboxFolder = document.getElementById('s-inbox').value.trim();
+  settings.productMoveBreaker = Number(document.getElementById('s-product-move-breaker').value);
   const useSlots = document.getElementById('s-slots-enabled').checked;
   const slots = readSlotsFromForm().sort((a, b) => hmToMin(a.start) - hmToMin(b.start));
   if (useSlots) {

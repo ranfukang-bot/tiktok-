@@ -31,7 +31,8 @@ export function loadSettings() {
   if (!settings.minIntervalMs || !settings.maxIntervalMs) {
     throw new Error('settings.json 里必须配置 minIntervalMs / maxIntervalMs');
   }
-  return { cycleAlertMs: 90 * 60 * 1000, ...settings };
+  delete settings.problemFolder; // 旧全局路径不迁移，也不用于移动
+  return { cycleAlertMs: 90 * 60 * 1000, productMoveBreaker: 3, ...settings };
 }
 
 export function saveSettings(settings) {

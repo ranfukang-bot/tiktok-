@@ -11,6 +11,15 @@
 
 const NEVER_RETRY_CODES = new Set(['uncertain_publish']);
 
+export function productIssueReason(err) {
+  if (err?.code === 'uncertain_publish') return null;
+  const message = String(err?.message ?? err).replace(/^page\.evaluate: (?:Error: )?/, '');
+  if (message.startsWith('商品没库存：')) return 'out_of_stock';
+  if (message.startsWith('商品当前不可用：')) return 'unavailable';
+  if (/^未找到精确商品ID(?:\s|$)/.test(message)) return 'not_in_showcase';
+  return null;
+}
+
 // 配置类：人不动手改，重试一万次也不会好
 const CONFIG_PATTERNS = [
   /页面结构不受支持/,

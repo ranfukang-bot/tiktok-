@@ -209,6 +209,16 @@
         </div>
 
         <div class="group">
+          <h3>连续商品问题保护</h3>
+          <div class="form-grid">
+            <div class="field">
+              <label for="s-product-move-breaker">连续几个不同商品出问题时暂停账号</label>
+              <input type="number" min="2" step="1" id="s-product-move-breaker" value="3">
+            </div>
+          </div>
+        </div>
+
+        <div class="group">
           <h3>发布完之后做什么</h3>
           <div class="form-grid">
             <div class="field span2">
@@ -415,6 +425,15 @@
             <button type="button" id="a-browse-btn">浏览…</button>
           </div>
           <div class="hint">如果"浏览"弹不出选择框，直接把 Windows 文件资源管理器地址栏里的路径复制粘贴进来。</div>
+        </div>
+        <div class="field span2">
+          <label for="a-problem-folder">发不出去的视频放到</label>
+          <div class="folder-controls">
+            <input type="text" id="a-problem-folder" placeholder="选这个号的图片文件夹">
+            <button type="button" id="a-pick-problem-folder">选择文件夹</button>
+            <button type="button" id="a-open-problem-folder">打开文件夹</button>
+          </div>
+          <div class="hint">选这个号的图片文件夹。留空时，遇到商品问题仍暂停账号。</div>
         </div>
         <div class="field span2">
           <label>话题标签（逗号分隔，会依次点击历史标签里的这些 #标签）</label>

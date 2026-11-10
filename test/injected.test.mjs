@@ -872,6 +872,30 @@ test('检查通过后变红：最终点击再次校验，不发出点击', async
   assert.equal(await page.evaluate(() => window.postClicks), 0);
 });
 
+test('内容检查持续灰色待检查时，音乐版权绿色且发布按钮可用后有限等待并继续发布', async () => {
+  await fresh({ timeoutMs: 2000, restartAfterMs: 0, contentReadyFallbackAfterMs: 50 });
+  await mockProductWorkflow();
+  await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+  await setState('music', 'success');
+  await setState('content', 'ready');
+  assert.equal(await page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe()), true);
+  assert.equal(await page.evaluate(() => window.__tkq.assertReadyToPublish()), true);
+  assert.deepEqual(await page.evaluate(() => window.__tkq.clickPublishButton()), { clicked: true, prematureCheck: false });
+  assert.equal(await page.evaluate(() => window.postClicks), 1);
+});
+
+test('灰色待检查兜底授权后若内容状态转为实际检查中，最终点击仍被拦截', async () => {
+  await fresh({ timeoutMs: 2000, restartAfterMs: 0, contentReadyFallbackAfterMs: 50 });
+  await mockProductWorkflow();
+  await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
+  await setState('music', 'success');
+  await setState('content', 'ready');
+  await page.evaluate(() => window.__tkq.waitForChecksPassAndAssertSafe());
+  await setState('content', 'checking');
+  await assert.rejects(page.evaluate(() => window.__tkq.clickPublishButton()), /发布安全检查未通过/);
+  assert.equal(await page.evaluate(() => window.postClicks), 0);
+});
+
 test('发布后任何新弹窗都报不确定，不替用户确认', async () => {
   await fresh(); await mockProductWorkflow();
   await page.evaluate(() => window.__tkq.addProductLink('10000000000001'));
