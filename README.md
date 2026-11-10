@@ -30,6 +30,7 @@
 - 更新前请关闭运行控制台的终端窗口（只关闭浏览器网页或点击“停止”不会退出控制台服务），然后重新双击启动文件。
 - Git 安装版先获取 `main`，再用 `git pull --ff-only` 拉取该提交；如果有冲突、本地改动阻止拉取或无法快进，会提示一句并使用旧版启动，不会自动丢弃本地改动。若目标提交涉及受保护的数据路径，也会跳过更新。
 - ZIP 下载版不需要 Git：先把 `main` 对应提交的 tar.gz 下载到系统临时目录，用系统自带的 `tar` 解压，全部成功并校验后才覆盖代码。下载、解压或校验失败时本地文件保持原样；覆盖失败会尝试回滚。需要系统可以运行 `tar`（Windows 10/11 和 macOS 通常自带）。成功版本记录在 `.update-version`，此文件不提交到 Git。首次离线运行且没有记录的下载版显示“当前版本：未知”，成功更新后显示提交短号和日期。
+- 旧版 Windows 下载版若提示 `Command failed: tar -xzf`，可能是旧更新器无法解压中文文件名。关闭控制台命令窗口后，从新版压缩包复制 `tools/self-update.mjs` 到原目录的 `tools` 下替换同名文件，再双击原目录的 `start.bat`。只替换更新器，不用搬动账号、配置或发布状态。
 - 始终保留 `config/settings.json`、`config/accounts.json`、`state/`、`diagnostics/output/`、`node_modules/` 和日志（`logs/`、`log/`、`*.log` 及其轮转文件）。依赖安装本身会按正常流程更新 `node_modules/`。
 - `package-lock.json` 变化后自动执行 `npm install`，首次缺少依赖时也会安装。安装失败会停止启动并提示“请把错误截图给开发者”；下次双击会重试安装，成功后才启动控制台。
 - 开发者可运行 `node --test test/self-update.test.mjs test/update-info.test.mjs`，使用临时目录、本地 tar 和注入的 GitHub 响应测试更新，不会联网，也不会覆盖真实配置或状态。

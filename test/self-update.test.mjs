@@ -181,6 +181,26 @@ function runGit(root, args) {
     env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(root, '.missing-global-gitconfig') },
     stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 }
+
+test('Git 打包的 UTF-8 中文文件名能解压并更新，账号和状态文件保持不变', async t => {
+  const f = fixture(t);
+  const filename = 'tools/数字锁监控.bat';
+  put(f.source, filename, '@echo off\r\n');
+  runGit(f.source, ['init', '-b', 'main']);
+  runGit(f.source, ['add', '.']);
+  runGit(f.source, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-m', '中文文件名']);
+  f.options.download = async (_version, destination) => {
+    runGit(f.source, ['archive', '--format=tar.gz', '--prefix=snapshot/', '-o', destination, 'HEAD']);
+  };
+  const before = snapshot(f.root);
+  assert.equal((await selfUpdate(f.options)).status, 'updated');
+  assert.equal(readFileSync(path.join(f.root, filename), 'utf8'), '@echo off\r\n');
+  const after = snapshot(f.root);
+  for (const [file, value] of Object.entries(before)) {
+    if (!['src/server.js', '.update-version'].includes(file)) assert.equal(after[file], value, file);
+  }
+});
+
 function gitFixture(t) {
   const f = fixture(t);
   const remote = path.join(f.dir, 'remote');

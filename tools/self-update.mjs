@@ -31,7 +31,13 @@ export async function downloadArchive(version, destination, signal) {
 }
 
 export async function extractArchive(archive, destination, timeout) {
-  await exec('tar', ['-xzf', archive, '-C', destination, '--strip-components=1'], { timeout, windowsHide: true });
+  const windowsTar = process.platform === 'win32' && process.env.SystemRoot
+    ? path.join(process.env.SystemRoot, 'System32', 'tar.exe') : null;
+  const useWindowsTar = windowsTar && existsSync(windowsTar);
+  // GitHub tar 包的文件名是 UTF-8；Windows 自带 bsdtar 默认可能用系统代码页读文件名。
+  const encoding = useWindowsTar ? ['--options', 'hdrcharset=UTF-8'] : [];
+  await exec(useWindowsTar ? windowsTar : 'tar',
+    [...encoding, '-xzf', archive, '-C', destination, '--strip-components=1'], { timeout, windowsHide: true });
 }
 
 function filesUnder(directory, prefix = '') {
