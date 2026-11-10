@@ -168,28 +168,42 @@ test('改名后配置保存失败时恢复原状态文件和品单',async()=>{
   } finally {await f.close();}
 });
 
-test('设置 API 拒绝账号目录和收件箱双向重叠，以及低于 2 的阈值', async () => {
+test('账号和设置 API 双向防止目录冲突，允许账号共享问题文件夹', async () => {
   const f = await serverFixture();
   try {
-    const { saveAccounts } = await f.load('config.js');
+    const { saveSettings } = await f.load('config.js');
     const videos = path.join(f.root, 'videos');
+    const otherVideos = path.join(f.root, 'other-videos');
     const inbox = path.join(f.root, 'inbox');
     const defaults = { minIntervalMs: 1, maxIntervalMs: 2 };
-    saveAccounts([{ name: '测试', videoFolder: videos }]);
-    for (const dir of [videos, inbox, path.join(videos, 'sub'), path.join(inbox, 'sub'), f.root]) {
-      const res = await fetch(f.url + '/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...defaults, inboxFolder: inbox, problemFolder: dir }) });
+    const putSettings = body => fetch(f.url + '/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...defaults, ...body }) });
+    saveSettings({ ...defaults, inboxFolder: inbox, problemFolder: '旧全局设置' });
+    const loaded = await fetch(f.url + '/api/settings').then(r => r.json());
+    assert.equal(Object.hasOwn(loaded, 'problemFolder'), false);
+    const main = { ...oldAccount, videoFolder: videos };
+    const other = { ...oldAccount, name: '另一个账号', videoFolder: otherVideos };
+    for (const dir of [videos, otherVideos, inbox, path.join(otherVideos, 'sub'), path.join(inbox, 'sub'), f.root]) {
+      const res = await saveAccountsRequest(f, [{ ...main, problemFolder: dir }, other]);
       assert.equal(res.status, 400);
       assert.match((await res.json()).error, /相同或互相包含/);
     }
-    const res = await fetch(f.url + '/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...defaults, productMoveBreaker: 1 }) });
+    const problemFolder = path.join(f.root, 'problem');
+    mkdirSync(problemFolder);
+    const shared = [{ ...main, problemFolder }, { ...other, problemFolder }];
+    assert.equal((await saveAccountsRequest(f, shared)).status, 200);
+    for (const overlap of [problemFolder, path.join(problemFolder, 'sub'), f.root]) {
+      assert.equal((await saveAccountsRequest(f, [shared[0], { ...shared[1], videoFolder: overlap }])).status, 400);
+      assert.equal((await putSettings({ inboxFolder: overlap })).status, 400);
+    }
+    const res = await putSettings({ productMoveBreaker: 1 });
     assert.equal(res.status, 400);
     assert.match((await res.json()).error, /至少 2/);
-    const valid = await fetch(f.url + '/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...defaults, inboxFolder: inbox, problemFolder: path.join(f.root, 'problem') }) });
+    const valid = await putSettings({ inboxFolder: inbox, productMoveBreaker: 2 });
     assert.equal(valid.status, 200);
+    const openFolder = await fetch(f.url + '/api/accounts/' + encodeURIComponent(other.name) + '/open-problem-folder', { method: 'POST' });
+    assert.equal(openFolder.status, 200);
     const status = await fetch(f.url + '/api/status').then(response => response.json());
-    assert.equal(status.productIssuePolicy, 'move-aside-v1');
+    assert.equal(status.productIssuePolicy, 'move-aside-v2');
   } finally { await f.close(); }
 });

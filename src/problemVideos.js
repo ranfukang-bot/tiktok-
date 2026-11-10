@@ -33,7 +33,7 @@ function contains(parent, child) {
   return !relative || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep));
 }
 
-export function validateProblemFolder(settings, accounts, destination = settings.problemFolder) {
+export function validateProblemFolder(settings, accounts, destination) {
   const value = String(destination ?? '').trim();
   if (!value) return '';
   const dir = path.resolve(value);
@@ -55,15 +55,18 @@ export function validateProblemFolder(settings, accounts, destination = settings
   return real;
 }
 
+export function validateAccountProblemFolders(settings, accounts) {
+  for (const account of accounts) {
+    if (!account.problemFolder?.trim()) continue;
+    try { validateProblemFolder(settings, accounts, account.problemFolder); }
+    catch (err) { throw new Error(`账号「${account.name}」：${err.message}`, { cause: err }); }
+  }
+}
+
 export function productMoveBreaker(value = 3) {
   const number = Number(value);
   if (!Number.isInteger(number) || number < 2) throw new Error('连续商品问题暂停阈值必须是至少 2 的整数');
   return number;
-}
-
-function safeAccountName(name) {
-  const safe = name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/, '_') || '_';
-  return /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(safe) ? '_' + safe : safe;
 }
 
 function busy(err) { return err.code === 'EBUSY' || err.code === 'EPERM'; }
@@ -150,18 +153,19 @@ export function flushMovedVideoCsv(log, { append = fs.appendFileSync } = {}) {
     const records = readJournal();
     const pending = new Map();
     for (const row of records.filter(record => record.csvPending)) {
-      if (!pending.has(row.problemFolder)) pending.set(row.problemFolder, []);
-      pending.get(row.problemFolder).push(row);
+      // 旧版本尚未写出的行仍补到原来的 CSV，新行只写账号文件夹的记录。
+      const target = path.join(row.problemFolder, row.accountFolder ? '发不出去的视频记录.csv' : '移走记录.csv');
+      if (!pending.has(target)) pending.set(target, []);
+      pending.get(target).push(row);
     }
-    for (const [folder, rows] of pending) {
+    for (const [target, rows] of pending) {
       try {
-        const target = path.join(folder, '移走记录.csv');
         const header = !fs.existsSync(target) || fs.statSync(target).size === 0 ? csvHeader : '';
         append(target, header + rows.map(csvRow).join(''), 'utf8');
         for (const row of rows) row.csvPending = false;
         writeJournal(records);
       } catch (err) {
-        log?.warn(`移走记录.csv 暂时写不了，下轮补写：${err.message}`);
+        log?.warn(`${path.basename(target)} 暂时写不了，下轮补写：${err.message}`);
       }
     }
   } catch (err) { log?.warn(`读取移走记录失败：${err.message}`); }
@@ -182,12 +186,10 @@ export async function moveProductVideos({ account, productId, reason, items, val
   let count = 0;
   let directory;
   for (const item of items) {
-    const root = validate();
-    directory = path.join(root, safeAccountName(account.name), label);
-    validate(directory);
+    directory = validate();
     await io.mkdir(directory, { recursive: true });
-    const resolved = validate(directory);
-    if (!contains(root, resolved)) throw new Error('问题视频子目录指向问题文件夹之外');
+    const resolved = validate();
+    if (directory !== resolved) throw new Error('问题视频文件夹指向已更改');
     const source = path.resolve(resolveItemPath(account.videoFolder, item));
     const filename = path.basename(source);
     if (!contains(canonical(path.resolve(account.videoFolder)), canonical(source)) ||
@@ -197,7 +199,7 @@ export async function moveProductVideos({ account, productId, reason, items, val
     await moveFile(source, destination, io, delay);
     const records = readJournal();
     records.push({ time: localTimestamp(), account: account.name, phoneGroup: account.phoneGroup || '',
-      reason: label, productId, filename, destination, source, problemFolder: root, csvPending: true });
+      reason: label, productId, filename, destination, source, problemFolder: resolved, accountFolder: true, csvPending: true });
     writeJournal(records);
     count++;
     flushMovedVideoCsv(log, { append });
