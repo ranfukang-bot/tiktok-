@@ -167,3 +167,29 @@ test('改名后配置保存失败时恢复原状态文件和品单',async()=>{
     assert.throws(()=>readFileSync(path.join(f.root,'state/新账号.json')),/ENOENT/);
   } finally {await f.close();}
 });
+
+test('设置 API 拒绝账号目录和收件箱双向重叠，以及低于 2 的阈值', async () => {
+  const f = await serverFixture();
+  try {
+    const { saveAccounts } = await f.load('config.js');
+    const videos = path.join(f.root, 'videos');
+    const inbox = path.join(f.root, 'inbox');
+    const defaults = { minIntervalMs: 1, maxIntervalMs: 2 };
+    saveAccounts([{ name: '测试', videoFolder: videos }]);
+    for (const dir of [videos, inbox, path.join(videos, 'sub'), path.join(inbox, 'sub'), f.root]) {
+      const res = await fetch(f.url + '/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...defaults, inboxFolder: inbox, problemFolder: dir }) });
+      assert.equal(res.status, 400);
+      assert.match((await res.json()).error, /相同或互相包含/);
+    }
+    const res = await fetch(f.url + '/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...defaults, productMoveBreaker: 1 }) });
+    assert.equal(res.status, 400);
+    assert.match((await res.json()).error, /至少 2/);
+    const valid = await fetch(f.url + '/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...defaults, inboxFolder: inbox, problemFolder: path.join(f.root, 'problem') }) });
+    assert.equal(valid.status, 200);
+    const status = await fetch(f.url + '/api/status').then(response => response.json());
+    assert.equal(status.productIssuePolicy, 'move-aside-v1');
+  } finally { await f.close(); }
+});

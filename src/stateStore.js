@@ -25,6 +25,7 @@ function defaultState() {
     pauseCode: '',
     // 连续失败次数：成功一次就清零。达到上限后才真正暂停并叫人。
     consecutiveFailures: 0,
+    consecutiveProductMoves: [],
     // 下次自动重试的时间；没在重试等待中就是 null
     retryAt: null,
     lastError: '',
@@ -79,6 +80,7 @@ export function resume(accountName) {
   state.pauseReason = '';
   state.pauseCode = '';
   state.consecutiveFailures = 0;
+  state.consecutiveProductMoves = [];
   state.retryAt = null;
   state.lastError = '';
   state.notifiedForPause = false;
@@ -90,6 +92,7 @@ export function resume(accountName) {
 export function clearFailures(accountName) {
   const state = getState(accountName);
   state.consecutiveFailures = 0;
+  state.consecutiveProductMoves = [];
   state.retryAt = null;
   state.lastError = '';
   state.notifiedForPause = false;
@@ -103,7 +106,7 @@ export function validateAccountNames(accounts) {
   for (const account of accounts) {
     const key = slug(account.name).toLowerCase();
     if (seen.has(key)) throw new Error(`账号名称对应同一个状态文件："${seen.get(key)}" 和 "${account.name}"，请换一个名称`);
-    if (['joblist', 'product-verdicts'].includes(key)) throw new Error(`账号名称 "${account.name}" 与系统状态文件重名，请换一个名称`);
+    if (['joblist', 'product-verdicts', 'moved-videos'].includes(key)) throw new Error(`账号名称 "${account.name}" 与系统状态文件重名，请换一个名称`);
     seen.set(key, account.name);
   }
 }

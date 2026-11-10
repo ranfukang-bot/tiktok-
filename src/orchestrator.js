@@ -2,6 +2,7 @@ import { chromium } from 'playwright-core';
 import {
   loadSettings,
   loadAccounts,
+  loadAllAccounts,
   resolveText,
   resolveHashtags,
   resolveDailyLimit,
@@ -13,7 +14,8 @@ import { createLogger } from './logger.js';
 import { getState, setState, pause, clearFailures } from './stateStore.js';
 import { scanDirectory, syncFilesIntoQueue, deletePublishedFile } from './folderScanner.js';
 import { runOneUploadCycle } from './browser/tiktokStudio.js';
-import { classifyError, retryDelayMs, maxRetries } from './errorPolicy.js';
+import { classifyError, retryDelayMs, maxRetries, productIssueReason } from './errorPolicy.js';
+import { moveProductVideos, flushMovedVideoCsv, validateProblemFolder, productMoveBreaker, PRODUCT_ISSUE_LABELS } from './problemVideos.js';
 import { notify } from './notifier.js';
 import { watchForStall, DEFAULT_CYCLE_ALERT_MS, SCHEDULER_ALERT_MS } from './stallAlert.js';
 import { routeInbox } from './inbox.js';
@@ -42,6 +44,8 @@ function randomInterval(min, max) {
 
 const processingAccounts = new Set();
 const activeSlots = new Map();
+const retainedProfiles = new Map();
+const profileKeyFor = account => JSON.stringify([account.name, account.browser, account.browserId, account.profileId, account.containerCode]);
 // 发布期间记录"最前面的窗口"每次变化（只在 Windows 上），用来查到底是谁把游戏切出去。
 const foregroundWatch = createForegroundWatch({ fallbackLog: createLogger('调度器') });
 export function isAccountProcessing(name) {
@@ -128,7 +132,53 @@ async function findOrOpenStudioPage(browser) {
   return pages[0] || (await ctx.newPage());
 }
 
-async function processAccountOnce(account, settings, adapter, log, slot = null) {
+async function moveBeforePublish(account, settings, item, err, log, accounts, moveOptions) {
+  const reason = productIssueReason(err);
+  if (err.publishAttempted !== false || !reason || !settings.problemFolder?.trim()) return false;
+  const fresh = getState(account.name);
+  if (fresh.paused || Number.isInteger(fresh.pendingIndex)) return false;
+  const validate = (destination) => {
+    const current = loadSettings();
+    if (current.problemFolder?.trim() !== settings.problemFolder.trim()) {
+      throw new Error('处理期间问题视频文件夹设置已更改');
+    }
+    const all = [...accounts, account, ...loadAllAccounts()];
+    validateProblemFolder(settings, all, destination);
+    return validateProblemFolder(current, all, destination);
+  };
+  try {
+    validate();
+    const limit = productMoveBreaker(settings.productMoveBreaker);
+    const ids = new Set(fresh.consecutiveProductMoves);
+    ids.add(item.productId);
+    if (ids.size >= limit) {
+      const reason = `连续${limit}个不同商品挂车失败（没库存/找不到/不可用），更可能是橱窗没加载、挂车权限或页面问题，已停下。前面移走的视频在问题文件夹里。`;
+      log.error(reason);
+      await pauseAndNotify(account, settings, { reason, code: 'product_move_breaker', log });
+      return true;
+    }
+    const items = fresh.items.slice(fresh.doneIndex + 1).filter(video => video.productId === item.productId);
+    const moved = await moveProductVideos({ account, productId: item.productId, reason, items, validate, log }, moveOptions);
+    const state = getState(account.name);
+    // 移动期间点了「继续」时尊重用户清零。
+    if (JSON.stringify(state.consecutiveProductMoves) === JSON.stringify(fresh.consecutiveProductMoves)) {
+      state.consecutiveProductMoves = [...ids];
+      setState(account.name, state);
+    }
+    await syncAccountFolder(account, settings, log, { quiet: true });
+    log.info(`商品ID ${item.productId} ${PRODUCT_ISSUE_LABELS[reason]}，已把 ${moved.count} 条视频移到 ${moved.directory}，继续发下一条`);
+    return true;
+  } catch (moveError) {
+    // 一组文件可能已经有部分移完；保留已写记录，并同步剩余队列。
+    await syncAccountFolder(account, settings, log, { quiet: true }).catch(() => {});
+    throw new Error(`${classifyError(err).reason} 问题视频没能全部移走：${moveError.message}`, { cause: moveError });
+  }
+}
+
+async function processAccountOnce(account, settings, adapter, log, slot, accounts, {
+  connectBrowser = (endpoint) => chromium.connectOverCDP(endpoint, cdpConnectOptions(endpoint)),
+  uploadCycle = runOneUploadCycle, moveOptions,
+} = {}) {
   const state = getState(account.name);
   const timezone = resolveTimezone(settings, account);
   rolloverIfNewDay(state, timezone);
@@ -151,10 +201,18 @@ async function processAccountOnce(account, settings, adapter, log, slot = null) 
   // 只有确认发布成功才关窗口。别的情况(报错、结果不确定)都要把窗口留着——
   // 那些情况的处理办法就是"人去打开这个号看一眼"，窗口关了就没得看了。
   let publishConfirmed = false;
+  let productIssueHandled = false;
+  let closeAfterMove = false;
+  let keepConnection = false;
 
-  const { wsEndpoint, reused } = await adapter.startProfile(account);
-  if (reused) log.info('已复用本账号正在运行的浏览器环境，跳过重复启动');
-  const browser = await chromium.connectOverCDP(wsEndpoint, cdpConnectOptions(wsEndpoint));
+  const profileKey = profileKeyFor(account);
+  let browser = retainedProfiles.get(profileKey);
+  retainedProfiles.delete(profileKey);
+  if (!browser?.isConnected()) {
+    const { wsEndpoint, reused } = await adapter.startProfile(account);
+    if (reused) log.info('已复用本账号正在运行的浏览器环境，跳过重复启动');
+    browser = await connectBrowser(wsEndpoint);
+  }
   try {
     const page = await findOrOpenStudioPage(browser);
     const config = {
@@ -165,7 +223,7 @@ async function processAccountOnce(account, settings, adapter, log, slot = null) 
 
     let result;
     try {
-      result = await runOneUploadCycle({
+      result = await uploadCycle({
         page,
         account,
         item,
@@ -195,6 +253,21 @@ async function processAccountOnce(account, settings, adapter, log, slot = null) 
     } catch (err) {
       // 把"是否已经点过发布"这个关键信息带给上层的错误分类逻辑
       err.publishAttempted = publishAttempted;
+      if (await moveBeforePublish(account, settings, item, err, log, accounts, moveOptions)) {
+        productIssueHandled = true;
+        const current = getState(account.name);
+        if (!current.paused) {
+          const hasNext = hasQuotaRemaining(current, resolveDailyLimit(settings, account)) &&
+            nextPublishableIndex(current, timezone) >= 0;
+          closeAfterMove = !hasNext;
+          // 保留已验证属于此账号的连接；旧调试端口可能被其它环境重新使用。
+          if (hasNext && browser.isConnected()) {
+            retainedProfiles.set(profileKey, browser);
+            keepConnection = true;
+          }
+        }
+        return;
+      }
       throw err;
     }
 
@@ -245,17 +318,17 @@ async function processAccountOnce(account, settings, adapter, log, slot = null) 
     // 先断开CDP连接，再让指纹浏览器客户端把这个环境正经关掉。
     // 顺序不能反：browser.close() 只是断开我们这端的连接，窗口还开着，
     // 真正释放那一千多MB内存的是 stopProfile。
-    await browser.close().catch(() => {});
+    if (!keepConnection) await browser.close().catch(() => {});
 
     // ⚠️ 这个 finally 里【绝对不能用 return】：finally 里的 return 会把正在往上抛的
     // 异常整个吞掉，报错就再也传不到 handleAccountError，账号既不会暂停也不会通知你。
     // 所以下面全用 if/else 分支。
     if (settings.closeProfileAfterCycle !== false) {
-      if (!publishConfirmed) {
+      if (!publishConfirmed && !closeAfterMove) {
         // 只在确认发布成功之后才关。出错、或者发布结果不确定的时候，处理办法本来就是
         // "人打开这个号去看一眼"(看内容列表到底发出去没有、看是不是哪个检查开关被关了)，
         // 这时候关掉窗口等于把人要看的东西收走了。留着的那一千多MB是值的。
-        log.info('这一轮没有确认发布成功，保留指纹浏览器窗口，方便你打开看一眼');
+        if (!productIssueHandled) log.info('这一轮没有确认发布成功，保留指纹浏览器窗口，方便你打开看一眼');
       } else {
         try {
           await adapter.stopProfile(account);
@@ -270,7 +343,7 @@ async function processAccountOnce(account, settings, adapter, log, slot = null) 
   }
 }
 
-async function tickAccount(settings, account, adapters, { folderSynced = false } = {}) {
+async function tickAccount(settings, account, adapters, { folderSynced = false, accounts = [account], runtime } = {}) {
   // 必须在第一个 await（扫目录）之前占用，且覆盖错误分类、通知、收尾。
   if (processingAccounts.has(account.name)) return;
   processingAccounts.add(account.name);
@@ -343,7 +416,7 @@ async function tickAccount(settings, account, adapters, { folderSynced = false }
     if (slot) activeSlots.set(account.name, slot);
     // 默认关闭：原因已查明（比特打开窗口那一刻抢前台），以后要排查时在 settings.json 设 "foregroundWatch": true。
     stopForegroundRecord = foregroundWatch.track(account.name, log, { enabled: settings.foregroundWatch === true });
-    await processAccountOnce(account, settings, adapter, log, slot);
+    await processAccountOnce(account, settings, adapter, log, slot, accounts, runtime);
   } catch (err) {
     // 开浏览器/等页面时过点、尚未上传：不计失败，留到下一节点；已上传的不走此分支。
     if (err.slotExpired) {
@@ -406,8 +479,9 @@ async function handleAccountError(account, settings, err, log) {
 }
 
 // 同一批次内的账号各自独立(各自的浏览器环境、各自的状态文件)，可以放心并发跑。
-export async function tick(settings, accounts, adapters) {
-  await Promise.all(accounts.map((account) => tickAccount(settings, account, adapters)));
+export async function tick(settings, accounts, adapters, runtime) {
+  flushMovedVideoCsv(createLogger('问题视频'));
+  await Promise.all(accounts.map((account) => tickAccount(settings, account, adapters, { accounts, runtime })));
 }
 
 function buildAdapters(settings, accounts) {
@@ -484,6 +558,14 @@ export async function tickAll(settings, accounts, options = {}) {
 
 async function scanAndDispatch(settings, accounts, { shouldContinue = () => true } = {}) {
   if (!shouldContinue()) return;
+  const activeProfiles = new Set(accounts.map(profileKeyFor));
+  for (const [key, browser] of retainedProfiles) {
+    if (!activeProfiles.has(key) || !browser.isConnected()) {
+      retainedProfiles.delete(key);
+      await browser.close().catch(() => {});
+    }
+  }
+  flushMovedVideoCsv(createLogger('问题视频'));
   await runInbox(settings, accounts);
   const adapters = buildAdapters(settings, accounts);
   const candidates = [];
@@ -534,7 +616,7 @@ async function scanAndDispatch(settings, accounts, { shouldContinue = () => true
   for (const { account } of candidates) {
     if (!shouldContinue() || processingAccounts.size >= concurrency) break;
     // tickAccount 在第一个 await 前占锁。异常兜底，后台任务不能产生未处理拒绝。
-    void tickAccount(settings, account, adapters, { folderSynced: true }).catch(err => {
+    void tickAccount(settings, account, adapters, { folderSynced: true, accounts }).catch(err => {
       createLogger(account.name).error(`账号处理收尾失败：${err.message}`);
     });
   }

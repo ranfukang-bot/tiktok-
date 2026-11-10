@@ -1,7 +1,8 @@
 import express from 'express';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
+import { validateProblemFolder, productMoveBreaker } from './problemVideos.js';
 import { pickFolder } from './pickFolder.js';
 import open from 'open';
 import {
@@ -102,6 +103,9 @@ app.put('/api/settings', (req, res) => {
     }
     // 全局表单可能持有旧快照，分组时区只允许由专用接口更新。
     settings.phoneGroupTimezones = loadSettings().phoneGroupTimezones;
+    settings.problemFolder = String(settings.problemFolder ?? '').trim();
+    settings.productMoveBreaker = productMoveBreaker(settings.productMoveBreaker);
+    validateProblemFolder(settings, loadAllAccounts());
     saveSettings(settings);
     res.json({ ok: true });
   } catch (err) {
@@ -157,6 +161,7 @@ app.put('/api/accounts', (req, res) => {
     }
 
     validateAccountNames(accounts);
+    validateProblemFolder(loadSettings(), accounts);
     const previous = loadAllAccounts();
     const oldNames = new Set(previous.map(a => a.name));
     const removed = new Set(previous.filter(a => !names.has(a.name)).map(a => a.name));
@@ -282,6 +287,17 @@ app.post('/api/pick-folder', async (req, res) => {
     res.json({ path: await pickFolder() });
   } catch (err) {
     res.status(500).json({ error: `无法打开文件夹选择框: ${err.message}` });
+  }
+});
+
+app.post('/api/open-problem-folder', async (req, res) => {
+  try {
+    const dir = validateProblemFolder({ ...loadSettings(), problemFolder: req.body?.path }, loadAllAccounts());
+    if (!dir || !statSync(dir).isDirectory()) throw new Error('请先选择已存在的问题视频文件夹');
+    await open(dir);
+    res.json({ ok: true });
+  } catch (err) {
+    handleError(res, err);
   }
 });
 

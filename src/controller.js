@@ -3,6 +3,7 @@ import { tickAll, isAccountProcessing, syncAccountFolder } from './orchestrator.
 import { getState, setState, resume } from './stateStore.js';
 import { createLogger } from './logger.js';
 import { deletePublishedFile } from './folderScanner.js';
+import { movedVideoCountsToday } from './problemVideos.js';
 import { currentDayKey, isWithinPostingWindow, nextPostingWindowStartMs, evaluateSlots, creditedSlotOnConfirm, slotTargetsForDay, recordConfirmedQuota, nextPublishableIndex } from './dailyQuota.js';
 
 let running = false;
@@ -68,6 +69,8 @@ export function getStatus() {
   let settingsError = null;
   try {
     const settings = loadSettings();
+    let movedCounts = new Map();
+    try { movedCounts = movedVideoCountsToday(); } catch { /* 记录读取失败不影响控制台状态 */ }
     accounts = loadAccounts().map((account) => {
       const state = getState(account.name);
       const timezone = resolveTimezone(settings, account);
@@ -104,6 +107,7 @@ export function getStatus() {
         total: state.items.length,
         doneIndex: state.doneIndex,
         remaining: Math.max(0, state.items.length - (state.doneIndex + 1)),
+        movedToday: movedCounts.get(account.name) || 0,
         productLimitReached: state.doneIndex + 1 < state.items.length && nextPublishableIndex(state, timezone) < 0,
         paused: state.paused,
         pauseReason: state.pauseReason,
@@ -130,7 +134,7 @@ export function getStatus() {
   } catch (err) {
     settingsError = err.message;
   }
-  return { running, lastTickAt, lastTickError, settingsError, accounts, slotCompletionPolicy: 'finish-started-upload', schedulerPolicy: 'single-flight-v1', uploadSelectionPolicy: 'verify-receipt-on-timeout-v2-90s', checksRecoveryPolicy: 'content-ready-fallback-v1', pageLogPolicy: 'polled-buffer-v1' };
+  return { running, lastTickAt, lastTickError, settingsError, accounts, productIssuePolicy: 'move-aside-v1', slotCompletionPolicy: 'finish-started-upload', schedulerPolicy: 'single-flight-v1', uploadSelectionPolicy: 'verify-receipt-on-timeout-v2-90s', checksRecoveryPolicy: 'content-ready-fallback-v1', pageLogPolicy: 'polled-buffer-v1' };
 }
 
 export async function resolveUncertain(accountName, decision) {
@@ -157,6 +161,7 @@ export async function resolveUncertain(accountName, decision) {
     const account = loadAllAccounts().find((a) => a.name === accountName);
     const timezone = resolveTimezone(settings, account || { name: accountName });
     recordConfirmedQuota(state, timezone, Date.now(), publishedItem?.productId || '');
+    state.consecutiveProductMoves = [];
     const dayKey = state.publishDayKey;
     if (plan.mode === 'slots') {
       state.nextTime = Date.now();

@@ -17,27 +17,35 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { createServer } from 'node:net';
+import { once } from 'node:events';
 import pw from 'playwright-core';
 import { tick } from '../src/orchestrator.js';
 
-const CDP_PORT = 9333;
-const ACCOUNT_NAME = '关窗口测试号';
+let cdpPort;
+const ACCOUNT_NAME = `关窗口测试号-${process.pid}`;
 const STATE_FILE = path.join(import.meta.dirname, '..', 'state', `${ACCOUNT_NAME}.json`);
 
 let browser, videoDir;
 const account = { name: ACCOUNT_NAME, browser: 'fake', browserId: 'x1', videoFolder: '', hashtagKeywords: ['fyp'] };
 
 before(async () => {
+  const probe = createServer().listen(0, '127.0.0.1');
+  await once(probe, 'listening');
+  cdpPort = probe.address().port;
+  await new Promise(resolve => probe.close(resolve));
   const executablePath = process.env.CHROMIUM_PATH || [
     'C:/Program Files/Google/Chrome/Application/chrome.exe',
     'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
   ].find(existsSync);
   browser = await pw.chromium.launch({
     ...(executablePath ? { executablePath } : {}),
-    args: [`--remote-debugging-port=${CDP_PORT}`],
+    // 固定走本地拒绝连接，仍执行真实 CDP 的失败路径，不依赖外网或登录页超时。
+    args: [`--remote-debugging-port=${cdpPort}`, '--no-proxy-server',
+      '--host-resolver-rules=MAP www.tiktok.com 127.0.0.1:1'],
   });
   for (let i = 0; i < 40; i++) {
-    try { await fetch(`http://127.0.0.1:${CDP_PORT}/json/version`); break; }
+    try { await fetch(`http://127.0.0.1:${cdpPort}/json/version`); break; }
     catch { await new Promise((r) => setTimeout(r, 250)); }
   }
   // 文件名就是商品ID，让队列里有一条待处理
@@ -48,7 +56,7 @@ before(async () => {
 
 after(async () => {
   await browser?.close();
-  rmSync(videoDir, { recursive: true, force: true });
+  if (videoDir) rmSync(videoDir, { recursive: true, force: true });
   rmSync(STATE_FILE, { force: true });
 });
 
@@ -69,7 +77,7 @@ function runOnce(settings, { stopThrows = false } = {}) {
   rmSync(STATE_FILE, { force: true });
   const calls = { start: 0, stop: 0 };
   const adapter = {
-    async startProfile() { calls.start++; return { wsEndpoint: `http://127.0.0.1:${CDP_PORT}` }; },
+    async startProfile() { calls.start++; return { wsEndpoint: `http://127.0.0.1:${cdpPort}` }; },
     async stopProfile() { calls.stop++; if (stopThrows) throw new Error('比特浏览器没响应'); },
   };
   return tick(settings, [account], new Map([['fake', adapter]])).then(() => calls);

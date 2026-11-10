@@ -271,6 +271,7 @@ function renderAccounts() {
         ${progressHtml}
         ${quotaBadge}
         ${timezoneBadge}
+        ${runtime?.movedToday > 0 ? `<span class="tag">今天移走 ${runtime.movedToday} 条</span>` : ''}
         ${runtime && runtime.scheduleMode === 'slots' ? `<span class="tag">今日错过 ${runtime.missedSlotsToday || 0} 个节点</span>` : ''}
       </div>
       <div class="ac-path" title="${escapeAttr(account.videoFolder)}">${escapeHtml(account.videoFolder)}</div>
@@ -408,13 +409,21 @@ document.getElementById('a-browser').addEventListener('change', updateBrowserFie
 document.getElementById('btn-add-account').addEventListener('click', () => openAccountModal(null));
 document.getElementById('a-cancel-btn').addEventListener('click', closeAccountModal);
 
-document.getElementById('a-browse-btn').addEventListener('click', async () => {
+async function pickFolderInto(inputId) {
   try {
     const data = await api('POST', '/api/pick-folder');
-    if (data.path) document.getElementById('a-folder').value = data.path;
+    if (data.path) document.getElementById(inputId).value = data.path;
   } catch (err) {
     alert(err.message);
   }
+}
+
+document.getElementById('a-browse-btn').addEventListener('click', () => pickFolderInto('a-folder'));
+document.getElementById('s-pick-problem-folder').addEventListener('click', () => pickFolderInto('s-problem-folder'));
+document.getElementById('s-open-problem-folder').addEventListener('click', async () => {
+  try {
+    await api('POST', '/api/open-problem-folder', { path: document.getElementById('s-problem-folder').value.trim() });
+  } catch (err) { alert(err.message); }
 });
 
 document.getElementById('a-delete-btn').addEventListener('click', async () => {
@@ -743,6 +752,8 @@ function fillSettingsForm(settings) {
   document.getElementById('s-daily-limit').value = settings.dailyPublishLimit ?? 0;
   document.getElementById('s-timezone').value = settings.timezone || 'Asia/Jakarta';
   document.getElementById('s-inbox').value = settings.inboxFolder || '';
+  document.getElementById('s-problem-folder').value = settings.problemFolder || '';
+  document.getElementById('s-product-move-breaker').value = settings.productMoveBreaker ?? 3;
 
   const window = settings.postingWindow || {};
   document.getElementById('s-window-start').value = window.startHour ?? 12;
@@ -798,6 +809,8 @@ document.getElementById('settings-form').addEventListener('submit', async (e) =>
   settings.dailyPublishLimit = Number(document.getElementById('s-daily-limit').value) || 0;
   settings.timezone = document.getElementById('s-timezone').value;
   settings.inboxFolder = document.getElementById('s-inbox').value.trim();
+  settings.problemFolder = document.getElementById('s-problem-folder').value.trim();
+  settings.productMoveBreaker = Number(document.getElementById('s-product-move-breaker').value);
   const useSlots = document.getElementById('s-slots-enabled').checked;
   const slots = readSlotsFromForm().sort((a, b) => hmToMin(a.start) - hmToMin(b.start));
   if (useSlots) {

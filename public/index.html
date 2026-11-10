@@ -205,6 +205,25 @@
         </div>
 
         <div class="group">
+          <h3>问题视频文件夹</h3>
+          <div class="form-grid">
+            <div class="field span2">
+              <label for="s-problem-folder">问题视频文件夹</label>
+              <div class="folder-controls">
+                <input type="text" id="s-problem-folder" placeholder="留空时，遇到商品问题仍暂停账号">
+                <button type="button" id="s-pick-problem-folder">选择文件夹</button>
+                <button type="button" id="s-open-problem-folder">打开文件夹</button>
+              </div>
+              <div class="hint">没库存、找不到商品或商品不可用时，把同商品的待发视频移到这里。请选与账号视频文件夹、收件箱互不包含的目录。</div>
+            </div>
+            <div class="field">
+              <label for="s-product-move-breaker">连续几个不同商品出问题时暂停账号</label>
+              <input type="number" min="2" step="1" id="s-product-move-breaker" value="3">
+            </div>
+          </div>
+        </div>
+
+        <div class="group">
           <h3>发布完之后做什么</h3>
           <div class="form-grid">
             <div class="field span2">

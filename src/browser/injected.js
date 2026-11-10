@@ -514,24 +514,34 @@ export function installTkqInPage(config) {
     // 没有来源标签时（东南亚）保持原行为：出现空橱窗提示就直接报错。
     // 有来源标签时，某个标签里没有搜索框、只有空列表提示，只代表"这个标签是空的"，返回 empty 换下一个。
     // guardTabId：等结果期间该标签必须一直是选中状态，否则返回 lostTab，由调用方重新切换再搜。
-    const searchCurrentProductList = async (hasSourceTabs, guardTabId = null) => {
+    const searchCurrentProductList = async (hasSourceTabs, guardTabId = null, retry = false) => {
+      const retryDeadline = retry ? Date.now() + 20000 : Infinity;
       const found = await waitFor(() => {
-        if (!hasSourceTabs && productDialog.querySelector('.product-empty-container')) {
+        if (!hasSourceTabs && !retry && productDialog.querySelector('.product-empty-container')) {
           throw new Error('商品橱窗为空，请先在TikTok App添加橱窗商品');
         }
         const input = uniqueVisible(productDialog, '.product-search-input input[type="text"]', '商品搜索框');
         if (input) return input;
+        if (!hasSourceTabs && Array.from(productDialog.querySelectorAll('.product-empty-container')).some(isVisible)) {
+          throw new Error('商品橱窗为空，请先在TikTok App添加橱窗商品');
+        }
         if (hasSourceTabs && Array.from(productDialog.querySelectorAll('.product-empty-container')).some(isVisible)) return 'empty';
         return null;
       }, 20000);
       if (found === 'empty') return { row: null, empty: true };
+      if (retry) {
+        nativeSetter.call(found, '');
+        found.dispatchEvent(new Event('input', { bubbles: true }));
+      }
       nativeSetter.call(found, productId);
       found.dispatchEvent(new Event('input', { bubbles: true }));
-      const searchIcon = await waitFor(() => uniqueVisible(productDialog, '.product-search-icon', '商品搜索按钮'));
+      const searchIcon = await waitFor(() => uniqueVisible(productDialog, '.product-search-icon', '商品搜索按钮'),
+        Math.min(10000, retryDeadline - Date.now()));
       fireClick(searchIcon);
-      const deadline = Date.now() + 20000;
+      const deadline = Math.min(Date.now() + 20000, retryDeadline);
       while (Date.now() < deadline) {
         checkForAppCrash();
+        if (getTopModal() !== productDialog) throw new Error('商品选择弹窗发生变化，已停止挂车');
         if (guardTabId && !isSourceTabActive(guardTabId)) return { row: null, empty: false, lostTab: true };
         const candidate = findProductRow();
         if (candidate) return { row: candidate, empty: false };
@@ -559,59 +569,68 @@ export function installTkqInPage(config) {
       }
       log(`商品来源标签：${sourceTabSnapshot()}（等了 ${Math.round((Date.now() - started) / 1000)} 秒）`);
     }
-    const sourceTabs = Array.from(productDialog.querySelectorAll('.TUXTabBar-item')).filter(isVisible)
-      .map((item) => ({ id: item.id, button: item.querySelector('button.TUXTabBar-itemTitle') }));
-
-    let row = null;
-    if (!sourceTabs.length) {
-      ({ row } = await searchCurrentProductList(false));
-    } else {
-      if (sourceTabs.some((tab) => !tab.id || !tab.button)) {
-        throw new Error('页面结构不受支持：商品来源标签缺少按钮或编号，已停止挂车');
-      }
-      if (new Set(sourceTabs.map((tab) => tab.id)).size !== sourceTabs.length) {
-        throw new Error('页面结构不受支持：商品来源标签编号重复，已停止挂车');
-      }
-      const ordered = [...sourceTabs.filter((tab) => tab.id === '2'), ...sourceTabs.filter((tab) => tab.id !== '2')];
-      let emptyTabs = 0;
-      for (const tab of ordered) {
-        let result = null;
-        let skipped = false;
-        for (let attempt = 1; attempt <= 3 && !result && !skipped; attempt += 1) {
-          if (getTopModal() !== productDialog) throw new Error('商品选择弹窗发生变化，已停止挂车');
-          if (!isSourceTabActive(tab.id)) {
-            const button = sourceTabButton(tab.id);
-            if (!button || !isEnabled(button)) {
-              log(`商品来源标签 ${tab.id} 当前不可用，跳过（${sourceTabSnapshot()}）`);
-              skipped = true;
-              break;
+    const searchAllSources = async (retry) => {
+      const sourceTabs = Array.from(productDialog.querySelectorAll('.TUXTabBar-item')).filter(isVisible)
+        .map((item) => ({ id: item.id, button: item.querySelector('button.TUXTabBar-itemTitle') }));
+      if (!sourceTabs.length) {
+        return (await searchCurrentProductList(false, null, retry)).row;
+      } else {
+        if (sourceTabs.some((tab) => !tab.id || !tab.button)) {
+          throw new Error('页面结构不受支持：商品来源标签缺少按钮或编号，已停止挂车');
+        }
+        if (new Set(sourceTabs.map((tab) => tab.id)).size !== sourceTabs.length) {
+          throw new Error('页面结构不受支持：商品来源标签编号重复，已停止挂车');
+        }
+        const ordered = [...sourceTabs.filter((tab) => tab.id === '2'), ...sourceTabs.filter((tab) => tab.id !== '2')];
+        let emptyTabs = 0;
+        let skippedTabs = 0;
+        for (const tab of ordered) {
+          let result = null;
+          let skipped = false;
+          for (let attempt = 1; attempt <= 3 && !result && !skipped; attempt += 1) {
+            if (getTopModal() !== productDialog) throw new Error('商品选择弹窗发生变化，已停止挂车');
+            if (!isSourceTabActive(tab.id)) {
+              const button = sourceTabButton(tab.id);
+              if (!button || !isEnabled(button)) {
+                log(`商品来源标签 ${tab.id} 当前不可用，跳过（${sourceTabSnapshot()}）`);
+                skipped = true;
+                break;
+              }
+              fireClick(button);
+              await waitFor(() => isSourceTabActive(tab.id), 5000, 100);
             }
-            fireClick(button);
-            await waitFor(() => isSourceTabActive(tab.id), 5000, 100);
+            // 切过去后再观察 1.5 秒：页面加载完成时可能把选中状态重置回默认标签。
+            await sleep(1500);
+            if (!isSourceTabActive(tab.id)) {
+              log(`商品来源标签 ${tab.id} 刚切过去又被页面切回（${sourceTabSnapshot()}），重新切换（第${attempt}/3次）`);
+              continue;
+            }
+            log(`在商品来源标签 ${tab.id} 中按精确商品ID搜索 ${productId}（${sourceTabSnapshot()}）`);
+            const attemptResult = await searchCurrentProductList(true, tab.id, retry);
+            if (attemptResult.lostTab) {
+              log(`等搜索结果时商品来源标签被页面切回（${sourceTabSnapshot()}），重新切换后再搜（第${attempt}/3次）`);
+              if (retry) break;
+              continue;
+            }
+            result = attemptResult;
           }
-          // 切过去后再观察 1.5 秒：页面加载完成时可能把选中状态重置回默认标签。
-          await sleep(1500);
-          if (!isSourceTabActive(tab.id)) {
-            log(`商品来源标签 ${tab.id} 刚切过去又被页面切回（${sourceTabSnapshot()}），重新切换（第${attempt}/3次）`);
-            continue;
+          if (skipped) { skippedTabs++; continue; }
+          if (!result) {
+            throw new Error(`等待元素超时：商品来源标签 ${tab.id} 反复被页面切回，未能稳定停在该标签上，尚未选择商品（${sourceTabSnapshot()}）`);
           }
-          log(`在商品来源标签 ${tab.id} 中按精确商品ID搜索 ${productId}（${sourceTabSnapshot()}）`);
-          const attemptResult = await searchCurrentProductList(true, tab.id);
-          if (attemptResult.lostTab) {
-            log(`等搜索结果时商品来源标签被页面切回（${sourceTabSnapshot()}），重新切换后再搜（第${attempt}/3次）`);
-            continue;
-          }
-          result = attemptResult;
+          if (result.row) return result.row;
+          if (result.empty) emptyTabs += 1;
+          log(`商品来源标签 ${tab.id} 中没有找到精确商品ID ${productId}`);
         }
-        if (skipped) continue;
-        if (!result) {
-          throw new Error(`等待元素超时：商品来源标签 ${tab.id} 反复被页面切回，未能稳定停在该标签上，尚未选择商品（${sourceTabSnapshot()}）`);
-        }
-        if (result.row) { row = result.row; break; }
-        if (result.empty) emptyTabs += 1;
-        log(`商品来源标签 ${tab.id} 中没有找到精确商品ID ${productId}`);
+        if (emptyTabs === ordered.length) throw new Error('商品橱窗为空，请先在TikTok App添加橱窗商品');
+        if (retry && skippedTabs) throw new Error('等待元素超时：部分商品来源标签不可用，无法确认商品是否存在');
+        return null;
       }
-      if (!row && emptyTabs === ordered.length) throw new Error('商品橱窗为空，请先在TikTok App添加橱窗商品');
+    };
+    let row = await searchAllSources(false);
+    if (!row) {
+      log(`第一轮未找到商品ID ${productId}，清空搜索框后再搜一轮`);
+      row = await searchAllSources(true);
     }
     if (!row) throw new Error(`未找到精确商品ID ${productId}，请核对该账号橱窗`);
     const radio = row.querySelector('input[type="radio"]');

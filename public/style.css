@@ -713,3 +713,11 @@ details > summary:focus-visible { outline: none; box-shadow: var(--ring); border
 #jl-table th:last-child, #jl-table td:last-child { width: 1%; }
 .jl-actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 #jl-csv { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
+.folder-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.folder-controls input {
+  flex: 1 1 220px;
+}

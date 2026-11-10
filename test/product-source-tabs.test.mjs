@@ -21,12 +21,13 @@ after(async () => { await browser?.close(); });
 const ID = '1737057459092423942';
 const NAME = 'Zapatillas de algodón ultra gruesas';
 
-async function mexicoPicker({ shop = [], showcase = [], brokenTabs = false, showcaseDelayMs = 0, tabBarDelayMs = 0, hiddenShopUntilMs = 0, resetAfterFirstSearchMs = 0 } = {}) {
+async function mexicoPicker({ shop = [], showcase = [], brokenTabs = false, showcaseDelayMs = 0, tabBarDelayMs = 0, hiddenShopUntilMs = 0, resetAfterFirstSearchMs = 0, secondPassProduct = false, noSourceTabs = false } = {}) {
   await page.setContent('<style>[role="dialog"]{position:fixed;inset:10px;background:white;border:1px solid}' +
     'button{min-width:40px;min-height:25px}input{width:200px;height:24px}</style>' +
     '<div class="anchor-tag-container"><button><span data-icon="Plus">+</span>Agregar</button></div>');
-  await page.evaluate(({ shop, showcase, brokenTabs, showcaseDelayMs, tabBarDelayMs, hiddenShopUntilMs, resetAfterFirstSearchMs, NAME }) => {
+  await page.evaluate(({ shop, showcase, brokenTabs, showcaseDelayMs, tabBarDelayMs, hiddenShopUntilMs, resetAfterFirstSearchMs, secondPassProduct, noSourceTabs, NAME }) => {
     window.searches = []; window.tabClicks = []; window.radioPicks = []; window.resets = 0;
+    window.searchInputs = [];
     const lists = { 1: shop, 2: showcase };
     const button = (type) => '<button class="TUXButton--' + type + '">btn</button>';
     const footer = () => '<div class="common-modal-footer">' + button('secondary') + button('primary') + '</div>';
@@ -84,7 +85,7 @@ async function mexicoPicker({ shop = [], showcase = [], brokenTabs = false, show
           if (resetAfterFirstSearchMs && searchesSeen === 1) setTimeout(resetToShop, resetAfterFirstSearchMs);
         };
         const addShowcase = () => row.insertAdjacentHTML('beforeend', tabItem('2', 'Productos del escaparate', false));
-        setTimeout(() => {
+        if (!noSourceTabs) setTimeout(() => {
           addShop();
           if (showcaseDelayMs) setTimeout(addShowcase, showcaseDelayMs); else addShowcase();
         }, tabBarDelayMs);
@@ -98,11 +99,23 @@ async function mexicoPicker({ shop = [], showcase = [], brokenTabs = false, show
           select.querySelector('tbody').innerHTML = '';
           setTimeout(() => render(lists[activeTab]), 150); // 切换后列表异步加载
         });
+        const searchInput = select.querySelector('.product-search-input input');
+        searchInput.oninput = () => window.searchInputs.push(searchInput.value);
         select.querySelector('.product-search-icon').onclick = () => {
-          const query = select.querySelector('.product-search-input input').value;
+          const query = searchInput.value;
+          if (secondPassProduct && (activeTab === '2' || noSourceTabs) && window.searches.some(s => s.tab === activeTab)) {
+            lists[activeTab] = [query];
+          }
           window.searches.push({ tab: activeTab, query });
           select.querySelector('tbody').innerHTML = '';
-          setTimeout(() => render(lists[activeTab].filter((id) => id === query)), 200);
+          setTimeout(() => {
+            const results = lists[activeTab].filter(id => id === query);
+            select.querySelector('.product-empty-container')?.remove();
+            if (noSourceTabs && !results.length) {
+              select.insertAdjacentHTML('beforeend', '<div class="product-empty-container">没有搜索结果</div>');
+            }
+            render(results);
+          }, 200);
           window.afterSearch();
         };
         next.onclick = () => {
@@ -118,7 +131,7 @@ async function mexicoPicker({ shop = [], showcase = [], brokenTabs = false, show
         };
       };
     };
-  }, { shop, showcase, brokenTabs, showcaseDelayMs, tabBarDelayMs, hiddenShopUntilMs, resetAfterFirstSearchMs, NAME });
+  }, { shop, showcase, brokenTabs, showcaseDelayMs, tabBarDelayMs, hiddenShopUntilMs, resetAfterFirstSearchMs, secondPassProduct, noSourceTabs, NAME });
   await page.evaluate(installTkqInPage, { text: {}, hashtagKeywords: ['fyp'] });
 }
 
@@ -145,6 +158,24 @@ test('两个标签都搜不到 → 报"未找到精确商品ID"，不选任何�
   await assert.rejects(page.evaluate((id) => window.__tkq.addProductLink(id), ID), /未找到精确商品ID/);
   assert.deepEqual(await page.evaluate(() => window.radioPicks), []);
   assert.equal(await page.locator('.anchor-container').count(), 0);
+  assert.deepEqual(await page.evaluate(() => window.searches.map(s => s.tab)), ['2', '1', '2', '1']);
+});
+
+test('第一轮全空结果，第二轮清空并重输 ID 后找到 → 正常挂车', async () => {
+  await mexicoPicker({ secondPassProduct: true });
+  const result = await page.evaluate((id) => window.__tkq.addProductLink(id), ID);
+  assert.equal(result.productId, ID);
+  assert.deepEqual(await page.evaluate(() => window.searches.map(s => s.tab)), ['2', '1', '2']);
+  assert.deepEqual(await page.evaluate(() => window.searchInputs), [ID, ID, '', ID]);
+  assert.deepEqual(await page.evaluate(() => window.radioPicks), [ID]);
+});
+
+test('没有来源标签时，搜索空结果仍可清空后再搜，找到后正常挂车', async () => {
+  await mexicoPicker({ noSourceTabs: true, secondPassProduct: true });
+  const result = await page.evaluate((id) => window.__tkq.addProductLink(id), ID);
+  assert.equal(result.productId, ID);
+  assert.deepEqual(await page.evaluate(() => window.searchInputs), [ID, '', ID]);
+  assert.deepEqual(await page.evaluate(() => window.radioPicks), [ID]);
 });
 
 test('来源标签结构不认识（缺少按钮）→ 停下报页面结构不受支持，不乱点', async () => {
