@@ -167,6 +167,19 @@ app.put('/api/accounts', (req, res) => {
       if (account.browser === 'hubstudio' && !account.containerCode) throw new Error(`账号 "${account.name}" 是Hubstudio但没填环境ID`);
       if (account.browser === 'bitbrowser' && !account.browserId) throw new Error(`账号 "${account.name}" 是比特浏览器但没填环境ID`);
     }
+    // 两个账号填了同一个比特窗口ID，发布时会打开同一个窗口发到同一个TikTok号上。
+    // 只提醒不拦截（不让一个填错的老账号把整张表锁死，改都改不了）。
+    const bitOwners = new Map();
+    for (const account of accounts) {
+      if (account.browser !== 'bitbrowser' || !account.browserId) continue;
+      const id = String(account.browserId).trim();
+      bitOwners.set(id, [...(bitOwners.get(id) || []), account.name]);
+    }
+    for (const [id, owners] of bitOwners) {
+      if (owners.length > 1) {
+        warnings.push(`账号 ${owners.map(n => `"${n}"`).join('、')} 填的是同一个比特窗口环境ID（${id}），发布时会打开同一个窗口。请编辑这些账号，在环境ID右边的下拉框里核对各自的窗口。`);
+      }
+    }
 
     validateAccountNames(accounts);
     validateAccountProblemFolders(loadSettings(), accounts);

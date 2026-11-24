@@ -358,7 +358,7 @@ function openAccountModal(idx) {
   document.getElementById('a-problem-folder').value = account.problemFolder || '';
   document.getElementById('a-hashtags').value = (account.hashtagKeywords || ['fyp', 'tiktok', 'tiktokshop']).join(',');
 
-  updateBrowserFields();
+  updateBrowserFields({ reload: true });
   modal.classList.remove('hidden');
 }
 
@@ -378,9 +378,15 @@ const PROFILE_ID_LABELS = {
   bitbrowser: '环境ID（比特浏览器窗口环境的id，可以从右边下拉框按名字选）',
 };
 
-let bitbrowserProfilesLoaded = false;
+// 比特窗口下拉框只是"按名字选ID"的辅助，真正保存的是左边ID框里的值。
+// 以前下拉框只读一次、打开别的账号也不重置，显示的永远是最后选过的那个窗口名，
+// 和ID框对不上；而且显示的刚好是要选的窗口时，再选一次不会触发change，ID根本没填进去。
+// 现在每次打开弹窗都重新读列表，并按ID框里的值反选窗口名；ID不在列表里就明说。
+let bitbrowserProfiles = null; // null = 还没读到或读取失败
+let bitbrowserLoadSeq = 0;
+const BITBROWSER_MISSING_LABEL = '⚠ 比特列表里没有这个ID';
 
-function updateBrowserFields() {
+function updateBrowserFields({ reload = false } = {}) {
   const browser = document.getElementById('a-browser').value;
   document.getElementById('a-profileid-label').textContent = PROFILE_ID_LABELS[browser] || '环境ID';
   const picker = document.getElementById('a-bitbrowser-picker');
@@ -388,30 +394,61 @@ function updateBrowserFields() {
   const isBit = browser === 'bitbrowser';
   picker.style.display = isBit ? 'inline-block' : 'none';
   hint.style.display = isBit ? 'block' : 'none';
-  if (isBit && !bitbrowserProfilesLoaded) {
-    bitbrowserProfilesLoaded = true;
-    loadBitBrowserProfiles();
+  if (!isBit) return;
+  if (reload || !bitbrowserProfiles) loadBitBrowserProfiles();
+  else syncBitBrowserPicker();
+}
+
+// 让下拉框显示的窗口名和ID框里的ID一致。
+function syncBitBrowserPicker() {
+  const picker = document.getElementById('a-bitbrowser-picker');
+  const id = document.getElementById('a-profileid').value.trim();
+  picker.querySelector('option[data-missing]')?.remove();
+  if (id && bitbrowserProfiles?.some((p) => p.id === id)) {
+    picker.value = id;
+    return;
+  }
+  picker.selectedIndex = 0;
+  // 列表读到了（且不是空的）但找不到这个ID：多半是选错窗口，或窗口删了重建过（ID会变）
+  if (id && bitbrowserProfiles?.length) {
+    const missing = document.createElement('option');
+    missing.value = '';
+    missing.dataset.missing = '1';
+    missing.textContent = BITBROWSER_MISSING_LABEL;
+    picker.insertBefore(missing, picker.options[1] || null);
+    missing.selected = true;
   }
 }
 
 async function loadBitBrowserProfiles() {
   const picker = document.getElementById('a-bitbrowser-picker');
+  const seq = ++bitbrowserLoadSeq;
+  syncBitBrowserPicker(); // 新列表回来之前，先按手上的旧列表对齐，不显示上一个账号的窗口名
   try {
     const profiles = await api('GET', '/api/bitbrowser/profiles');
+    if (seq !== bitbrowserLoadSeq) return; // 已经有更新的读取请求，丢弃这次结果
+    bitbrowserProfiles = Array.isArray(profiles) ? profiles : [];
     picker.innerHTML =
       '<option value="">从列表选择…</option>' +
-      profiles.map((p) => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name || p.id)}${p.remark ? ' - ' + escapeHtml(p.remark) : ''}</option>`).join('');
+      bitbrowserProfiles.map((p) => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name || p.id)}${p.remark ? ' - ' + escapeHtml(p.remark) : ''}</option>`).join('');
+    syncBitBrowserPicker();
   } catch (err) {
+    if (seq !== bitbrowserLoadSeq) return;
+    bitbrowserProfiles = null; // 下次打开弹窗再试
     picker.innerHTML = '<option value="">读取失败，手动填ID</option>';
-    bitbrowserProfilesLoaded = false; // 允许下次重新尝试
   }
 }
 
 document.getElementById('a-bitbrowser-picker').addEventListener('change', (e) => {
   if (e.target.value) document.getElementById('a-profileid').value = e.target.value;
+  syncBitBrowserPicker();
+});
+// 手动粘贴/修改ID时，下拉框跟着显示对应的窗口名
+document.getElementById('a-profileid').addEventListener('input', () => {
+  if (document.getElementById('a-browser').value === 'bitbrowser') syncBitBrowserPicker();
 });
 
-document.getElementById('a-browser').addEventListener('change', updateBrowserFields);
+document.getElementById('a-browser').addEventListener('change', () => updateBrowserFields());
 document.getElementById('btn-add-account').addEventListener('click', () => openAccountModal(null));
 document.getElementById('a-cancel-btn').addEventListener('click', closeAccountModal);
 

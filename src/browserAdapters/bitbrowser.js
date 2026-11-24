@@ -65,6 +65,51 @@ export function createBitBrowserAdapter(settings, { request = fetch, delay = ms 
     return [];
   }
 
+  async function listProfiles() {
+    const all = [];
+    for (let page = 0; page < 5; page += 1) {
+      const data = await post('/browser/list', { page, pageSize: 100 });
+      const items = extractList(data);
+      all.push(...items.map((it) => ({ id: it.id, name: it.name || '', seq: it.seq, remark: it.remark || '' })));
+      if (items.length < 100) break;
+    }
+    return all;
+  }
+
+  // /browser/open 报"服务调用成功，但没有找到相应数据"这类业务错误时，查一下这个ID在比特里到底存不存在，
+  // 把"ID填错/窗口删了重建"和"窗口在、但比特那边打不开"分开说清楚。查询本身出错时保留原错误，不乱下结论。
+  async function explainOpenFailure(account, err) {
+    const id = account.browserId;
+    let found = null;
+    try {
+      const detail = await post('/browser/detail', { id }, 10000);
+      if (detail && (detail.id === id || detail.name || detail.seq !== undefined)) found = detail;
+    } catch { /* 查不到再去列表里核对 */ }
+    if (!found) {
+      let list;
+      try { list = await listProfiles(); } catch { return err; }
+      found = list.find((p) => p.id === id) || null;
+      // 列表是空的（没登录/还没同步）或者超过能翻到的500个，没法断定ID不存在
+      if (!found && list.length > 0 && list.length < 500) {
+        const error = new Error(
+          `比特浏览器里找不到环境ID「${id}」：当前登录的比特账号的窗口列表里没有这个ID（比特原话：${err.message.replace(/^比特浏览器接口 \/browser\/open 返回错误: /, '')}）。` +
+          `多半是选错/没选上窗口，或者窗口删了重建过（重建后ID会变）。请点这个账号的「编辑」，在环境ID右边的下拉框里重新选对应的比特窗口，保存后点「继续」。`,
+          { cause: err },
+        );
+        error.code = 'BITBROWSER_PROFILE_NOT_FOUND';
+        return error;
+      }
+      if (!found) return err;
+    }
+    const label = [found.seq !== undefined && found.seq !== null ? `序号${found.seq}` : '', found.name ? `「${found.name}」` : ''].join('') || id;
+    const error = new Error(
+      `${err.message}。环境ID是对的，比特浏览器里能查到这个窗口（${label}），但比特拒绝打开它。` +
+      `请在比特浏览器里手动点这个窗口的「打开」试试：手动也打不开，就检查它绑的代理IP是否被删除/过期、窗口是否授权给了当前登录的比特账号、是不是正在别的电脑上打开。`,
+      { cause: err },
+    );
+    return error;
+  }
+
   return {
     name: 'bitbrowser',
 
@@ -77,6 +122,7 @@ export function createBitBrowserAdapter(settings, { request = fetch, delay = ms 
       for (let attempt = 0; attempt < 3; attempt++) {
         try { data = await post('/browser/open', { id, args: BACKGROUND_SAFE_ARGS }); break; }
         catch (err) {
+          if (/没有找到相应数据/.test(err.message)) throw await explainOpenFailure(account, err);
           // 仅明确的启动TLS业务失败短重试；请求超时等结果不明情况交给外层退避。
           if (err.code !== 'BITBROWSER_START_TLS') throw err;
           const opened = await alreadyOpen(id);
@@ -100,15 +146,6 @@ export function createBitBrowserAdapter(settings, { request = fetch, delay = ms 
     },
 
     // 供网页控制台"从比特浏览器读取环境列表"按钮使用，最多翻5页（500个）。
-    async listProfiles() {
-      const all = [];
-      for (let page = 0; page < 5; page += 1) {
-        const data = await post('/browser/list', { page, pageSize: 100 });
-        const items = extractList(data);
-        all.push(...items.map((it) => ({ id: it.id, name: it.name || '', seq: it.seq, remark: it.remark || '' })));
-        if (items.length < 100) break;
-      }
-      return all;
-    },
+    listProfiles,
   };
 }

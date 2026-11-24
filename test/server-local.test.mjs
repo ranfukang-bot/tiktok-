@@ -219,3 +219,18 @@ test('账号和设置 API 双向防止目录冲突，允许账号共享问题文
     assert.equal(status.productIssuePolicy, 'move-aside-v2');
   } finally { await f.close(); }
 });
+
+test('保存账号时两个账号填了同一个比特窗口ID会提醒（不拦截）', async () => {
+  const f = await serverFixture();
+  try {
+    const account = (name, browserId) => ({ name, browser: 'bitbrowser', browserId, videoFolder: `C:/fixture/${name}` });
+    const res = await fetch(`${f.url}/api/accounts`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accounts: [account('A', 'same'), account('B', 'same'), account('C', 'own')] }),
+    });
+    const body = await res.json();
+    assert.equal(res.status, 200, JSON.stringify(body));
+    assert.equal(body.warnings.filter(w => /同一个比特窗口环境ID/.test(w)).length, 1);
+    assert.match(body.warnings.find(w => /同一个比特窗口/.test(w)), /"A"、"B".*same/);
+  } finally { await f.close(); }
+});

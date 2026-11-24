@@ -31,6 +31,8 @@ const CONFIG_PATTERNS = [
   /缺少 profileId/,
   /缺少 containerCode/,
   /缺少 browserId/,
+  // 已向比特核实过列表里没有这个环境ID：ID填错/窗口重建过，重试多少次都打不开
+  /比特浏览器里找不到环境ID/,
   /未知的指纹浏览器类型/,
   /连不上比特浏览器本地API/,
   /本地API地址/,
